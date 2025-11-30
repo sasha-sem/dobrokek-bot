@@ -11,9 +11,12 @@ dependencies = [
     "python-telegram-bot (>=22.5,<23.0)",
     "instaloader (>=4.15,<5.0)",
     "pytubefix (>=10.3.5,<11.0.0)",
-    "yt-dlp (>=2025.11.12,<2026.0.0)"
+    "yt-dlp[curl-cffi,default] (>=2025.11.12,<2026.0.0)",
+    "curl-cffi (>=0.13.0,<0.14.0)"
 ]
 
+[tool.poetry]
+package-mode = false
 
 [build-system]
 requires = ["poetry-core>=2.0.0,<3.0.0"]

@@ -1,5 +1,5 @@
 from telegram.ext import ApplicationBuilder, MessageHandler, filters, ContextTypes
-from handlers.link_message_handler import handle_link_message
+from handlers import handle_link_message
 import os
 
 BOT_TOKEN = os.environ['BOT_TOKEN']
