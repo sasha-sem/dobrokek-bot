@@ -1,5 +1,6 @@
 .conda
 .env
+.venv
 .vscode
 __pycache__
 downloads

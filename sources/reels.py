@@ -1,6 +1,9 @@
 import instaloader
 import re
 from sources.source import Source
+import os
+from datetime import datetime
+import requests
 
 REELS_PATTERN = r"https?://(?:www\.)?instagram\.com/(?:reel|reels|p)/[A-Za-z0-9_-]+"
 REELS_SHORTCODE_PATTERN = r"(?:reel|reels|p)/([A-Za-z0-9_-]+)"
@@ -28,7 +31,11 @@ class ReelsSource(Source):
             return None
         shortcode_match = re.search(REELS_SHORTCODE_PATTERN, url_match.group(0))
         return shortcode_match.group(1) if shortcode_match else None
-
+    
+    def get_filename(self) -> str:
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        return f"reels_{timestamp}.mp4"
+    
     def download(self, url: str, download_path: str) -> str:
         shortcode = self._extract_shortcode(url)
         if not shortcode:
@@ -37,17 +44,21 @@ class ReelsSource(Source):
         loader = CustomInstaloader()
 
         post = instaloader.Post.from_shortcode(loader.context, shortcode)
-        loader.download_post(post, target=download_path)
 
-        if len(loader.saved_files) == 0:
-            return ""
-        
-        video_files = [path for path in loader.saved_files if path.lower().endswith(".mp4")]
+        video_url = post.video_url
 
-        if len(video_files) != 0:
-            return video_files[0]
+        filename = self.get_filename()
+        output_path = os.path.join(download_path, filename)
 
-        return loader.saved_files[0]
+        response = requests.get(video_url, stream=True)
+        if response.status_code == 200:
+            with open(output_path, 'wb') as f:
+                for chunk in response.iter_content(chunk_size=8192):
+                    f.write(chunk)
+            print(f"Downloaded reels {output_path}")
+            return output_path
+        else:
+            Exception("Error getting reels", response)
 
 
 if __name__ == "__main__":
