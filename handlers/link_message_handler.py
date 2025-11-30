@@ -5,8 +5,6 @@ from telegram.ext import ContextTypes
 from sources import Source, ShortsSource, ReelsSource, TikTokSource
 import os
 
-
-
 CHAT_ID = os.environ['CHANNEL_ID']
 WHITELIST = [int(user_id) for user_id in os.environ['WHITELIST'].split(',')]
 

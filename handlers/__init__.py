@@ -1,1 +1,1 @@
-from link_message_handler import handle_link_message
+from handlers.link_message_handler import handle_link_message

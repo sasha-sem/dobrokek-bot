@@ -6,3 +6,6 @@ services:
 
     env_file:
       - .env
+
+    volumes:
+      - ./downloads:/app/downloads
