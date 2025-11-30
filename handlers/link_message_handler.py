@@ -8,6 +8,7 @@ import os
 
 
 CHAT_ID = os.environ['CHANNEL_ID']
+WHITELIST = [int(user_id) for user_id in os.environ['WHITELIST'].split(',')]
 
 LINK_PATTERN = r"https?://[^\s]+"
 DOWNLOAD_PATH = r"downloads"
@@ -16,6 +17,10 @@ SOURCES : list[type[Source]] = [ReelsSource(), ShortsSource(), TikTokSource()]
 
 async def handle_link_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     print("Got message with link")
+    if update.effective_user.id  not in WHITELIST:
+        await update.message.reply_text("У вас нет доступа к использованию данного бота")
+        return
+    
     message = update.message
     if not message or  not message.entities:
         await update.message.reply_text("В сообщении не обнаружена ссылка")
