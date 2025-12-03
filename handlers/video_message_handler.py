@@ -23,7 +23,13 @@ async def handle_video_message(update: Update, context: ContextTypes.DEFAULT_TYP
         await update.message.reply_text("В сообщении не обнаружено видео")
         return
     try:
-        await context.bot.send_video(CHAT_ID, message.video, caption=f"{helpers.escape_markdown(message.caption if message.caption else message.video.file_name)}\n\n👤`{update.effective_user.first_name}`", parse_mode=ParseMode.MARKDOWN)
+        await context.bot.send_video(
+            CHAT_ID,
+            message.video,
+            caption=f"{message.caption if message.caption else helpers.escape_markdown(message.video.file_name)}\n\n👤`{update.effective_user.first_name}`", 
+            parse_mode=ParseMode.MARKDOWN,
+            has_spoiler=True,
+            )
         await update.message.reply_text("Успешно отправлено в канал.\nСпасибо за контент!")
         return
     except Exception as e:
