@@ -1,4 +1,3 @@
-import instaloader
 import re
 from sources.source import Source
 import os
