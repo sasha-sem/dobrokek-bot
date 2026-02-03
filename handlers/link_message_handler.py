@@ -53,6 +53,7 @@ async def handle_link_message(update: Update, context: ContextTypes.DEFAULT_TYPE
                 caption=f"{message.text}\n\n👤`{update.effective_user.first_name}`",
                 parse_mode=ParseMode.MARKDOWN,
                 has_spoiler=True,
+                disable_notification=True
             )
             await update.message.reply_text("Успешно отправлено в канал.\nСпасибо за контент!")
             return

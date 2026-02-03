@@ -29,6 +29,7 @@ async def handle_video_message(update: Update, context: ContextTypes.DEFAULT_TYP
             caption=f"{message.caption if message.caption else helpers.escape_markdown(message.video.file_name)}\n\n👤`{update.effective_user.first_name}`", 
             parse_mode=ParseMode.MARKDOWN,
             has_spoiler=True,
+            disable_notification=True
             )
         await update.message.reply_text("Успешно отправлено в канал.\nСпасибо за контент!")
         return
