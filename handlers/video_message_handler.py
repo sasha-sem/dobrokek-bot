@@ -14,7 +14,13 @@ DOWNLOAD_PATH = r"downloads"
 
 async def handle_video_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     print("Got message with video")
-    if update.effective_user.id not in WHITELIST:
+    if not update:
+        return
+    
+    if not update.message:
+        return
+    
+    if not update.effective_user or update.effective_user.id not in WHITELIST:
         await update.message.reply_text("У вас нет доступа к использованию данного бота")
         return
 
@@ -24,13 +30,13 @@ async def handle_video_message(update: Update, context: ContextTypes.DEFAULT_TYP
         return
     try:
         await context.bot.send_video(
-            CHAT_ID,
-            message.video,
-            caption=f"{message.caption if message.caption else helpers.escape_markdown(message.video.file_name)}\n\n👤`{update.effective_user.first_name}`", 
+            chat_id=CHAT_ID,
+            video=message.video,
+            caption=f"{message.caption+"\n\n" if message.caption else ""}👤`{update.effective_user.first_name}`",
             parse_mode=ParseMode.MARKDOWN,
             has_spoiler=True,
             disable_notification=True
-            )
+        )
         await update.message.reply_text("Успешно отправлено в канал.\nСпасибо за контент!")
         return
     except Exception as e:

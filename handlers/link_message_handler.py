@@ -16,7 +16,13 @@ SOURCES: list[type[Source]] = [ReelsSource(), ShortsSource(), TikTokSource()]
 
 async def handle_link_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     print("Got message with link")
-    if update.effective_user.id not in WHITELIST:
+    if not update:
+        return
+    
+    if not update.message:
+        return
+    
+    if not update.effective_user or update.effective_user.id not in WHITELIST:
         await update.message.reply_text("У вас нет доступа к использованию данного бота")
         return
 
