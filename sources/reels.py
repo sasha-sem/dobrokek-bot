@@ -40,7 +40,7 @@ class ReelsSource(Source):
         ct = video_resp.headers.get("Content-Type", "")
 
         if ct != "video/mp4":
-            Exception("Can't download this reel")
+            raise Exception("Can't download this reel")
 
         filename = self.get_filename()
         output_path = os.path.join(download_path, filename)
