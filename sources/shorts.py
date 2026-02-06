@@ -2,6 +2,7 @@ from pytubefix import YouTube
 from sources.source import Source
 import re
 from datetime import datetime
+import requests
 
 YOUTUBE_SHORTS_PATTERN = r"https?://(?:www\.)?(?:youtube\.com/shorts/|youtu\.be/)[A-Za-z0-9_-]+"
 
@@ -12,7 +13,7 @@ class ShortsSource(Source):
 
     def get_filename(self) -> str:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        return f"reels_{timestamp}.mp4"
+        return f"shorts_{timestamp}.mp4"
     
     def download(self, url: str, download_path: str) -> str:
         video = YouTube(url)
@@ -24,7 +25,7 @@ class ShortsSource(Source):
         if not stream:
             return ""
 
-        filepath = stream.download(output_path=download_path, filename=self.get_filename())
+        filepath = stream.download(output_path=download_path, filename=self.get_filename(), max_retries=5)
         return filepath
 
 

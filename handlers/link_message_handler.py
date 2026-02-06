@@ -1,4 +1,4 @@
-from telegram import Update
+from telegram import Update, helpers
 from telegram.constants import ParseMode
 import re
 from telegram.ext import ContextTypes
@@ -50,13 +50,17 @@ async def handle_link_message(update: Update, context: ContextTypes.DEFAULT_TYPE
     else:
         await update.message.reply_text("Данный источник не поддерживается")
         return
+    
+    if not filepath:
+        await update.message.reply_text("Не удалось загрузить видео")
+        return
 
     with open(filepath, 'rb') as document:
         try:
             await context.bot.send_video(
                 CHAT_ID,
                 document,
-                caption=f"{message.text}\n\n👤`{update.effective_user.first_name}`",
+                caption=f"{helpers.escape_markdown(message.text)}\n\n👤`{update.effective_user.first_name}`",
                 parse_mode=ParseMode.MARKDOWN,
                 has_spoiler=True,
                 disable_notification=True
@@ -64,5 +68,5 @@ async def handle_link_message(update: Update, context: ContextTypes.DEFAULT_TYPE
             await update.message.reply_text("Успешно отправлено в канал.\nСпасибо за контент!")
             return
         except Exception as e:
-            await update.message.reply_text("Не удалось скачать видео")
+            await update.message.reply_text("Не удалось отправить видео")
             print("Error: Couldn't send video: ", e)
