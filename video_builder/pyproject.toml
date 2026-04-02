@@ -5,6 +5,8 @@ description = "Антидоброкек compilation video builder"
 requires-python = ">=3.12"
 dependencies = [
     "moviepy>=2.0.0",
+    "numpy (>=2.4.4,<3.0.0)",
+    "tqdm>=4.66.0",
 ]
 
 [tool.poetry]
