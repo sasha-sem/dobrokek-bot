@@ -55,8 +55,8 @@ async def handle_link_message(update: Update, context: ContextTypes.DEFAULT_TYPE
         await update.message.reply_text("Не удалось загрузить видео")
         return
 
-    with open(filepath, 'rb') as document:
-        try:
+    try:
+        with open(filepath, 'rb') as document:
             await context.bot.send_video(
                 CHAT_ID,
                 document,
@@ -65,8 +65,12 @@ async def handle_link_message(update: Update, context: ContextTypes.DEFAULT_TYPE
                 has_spoiler=True,
                 disable_notification=True
             )
-            await update.message.reply_text("Успешно отправлено в канал.\nСпасибо за контент!")
-            return
+        await update.message.reply_text("Успешно отправлено в канал.\nСпасибо за контент!")
+    except Exception as e:
+        await update.message.reply_text("Не удалось отправить видео")
+        print("Error: Couldn't send video: ", e)
+    finally:
+        try:
+            os.remove(filepath)
         except Exception as e:
-            await update.message.reply_text("Не удалось отправить видео")
-            print("Error: Couldn't send video: ", e)
+            print("Warning: Couldn't delete file: ", e)

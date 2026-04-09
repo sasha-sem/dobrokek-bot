@@ -4,27 +4,22 @@ import requests
 from datetime import datetime
 from sources.source import Source
 
-TIKTOK_PATTERN = r'https?://(?:vm|vt)\.tiktok\.com/([A-Za-z0-9_-]+)'
+TIKTOK_PATTERN = r'https?://(?:(?:vm|vt)\.tiktok\.com/[A-Za-z0-9_-]+|www\.tiktok\.com/t/[A-Za-z0-9_-]+|www\.tiktok\.com/@[^/]+/video/\d+)'
 
 
 class TikTokSource(Source):
-    def _extract_code(self, url: str):
-        m = re.search(TIKTOK_PATTERN, url)
-        return m.group(1) if m else None
-
     def supports(self, url: str) -> bool:
-        return bool(self._extract_code(url))
+        return bool(re.search(TIKTOK_PATTERN, url))
 
     def get_filename(self) -> str:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         return f"tiktok_{timestamp}.mp4"
 
     def download(self, url: str, download_path: str) -> str:
-        code = self._extract_code(url)
-        if not code:
+        if not self.supports(url):
             return ""
 
-        video_url = f"https://vt.kktiktok.com/{code}/"
+        video_url = url.replace("tiktok.com", "kktiktok.com")
 
         headers = {
             "User-Agent": "Mozilla/5.0 (Linux; Android 10; K) Telegram-Android/11.7.3 (Samsung SM-A750F; Android 10; SDK 29; LOW)"
