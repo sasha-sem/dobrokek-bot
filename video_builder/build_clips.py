@@ -18,15 +18,18 @@ from PIL import Image, ImageDraw, ImageFont
 from tqdm import tqdm
 
 # --- НАСТРОЙКИ ОКРУЖЕНИЯ ---
+import shutil
 wsl_native_path = "/usr/lib/wsl/lib"
 if os.path.exists(wsl_native_path):
     os.environ["LD_LIBRARY_PATH"] = f"{wsl_native_path}:" + \
         os.environ.get("LD_LIBRARY_PATH", "")
 
-os.environ["FFMPEG_BINARY"] = "/usr/local/bin/ffmpeg"
+os.environ["FFMPEG_BINARY"] = shutil.which("ffmpeg") or "/usr/local/bin/ffmpeg"
 # ---------------------------
 
 from moviepy import VideoFileClip  # noqa: E402  (must be after env setup)
+
+from hw_encoder import get_encoder_config
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 BASE_DIR = Path(__file__).parent
@@ -41,6 +44,9 @@ VIDEO_FONT_PATH = str(BASE_DIR / "static/Roboto-Regular.ttf")
 
 FIRST_CLIP_PATH = str(BASE_DIR / "export/first_clip.MP4")
 LAST_CLIP_PATH = str(BASE_DIR / "export/last_clip.mp4")
+MEME_DIR = BASE_DIR / "export/memes"
+MEME_DURATION = 5
+MEME_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -132,6 +138,7 @@ def process_video_fast(input_path: str, output_path: str, title: str, font_path:
         pil_image.save(temp_text_img)
 
     ffmpeg_bin = os.environ.get("FFMPEG_BINARY", "ffmpeg")
+    enc = get_encoder_config(ffmpeg_bin)
 
     if has_text:
         filter_complex = (
@@ -146,7 +153,7 @@ def process_video_fast(input_path: str, output_path: str, title: str, font_path:
             "-loop", "1", "-i", temp_text_img,
             "-filter_complex", filter_complex,
             "-map", "[outv]", "-map", "0:a?",
-            "-c:v", "h264_nvenc", "-preset", "p4", "-cq", "28", "-c:a", "aac", "-shortest",
+            *enc["ffmpeg_flags"], "-c:a", "aac", "-shortest",
             output_path,
         ]
     else:
@@ -160,7 +167,7 @@ def process_video_fast(input_path: str, output_path: str, title: str, font_path:
             "-i", input_path,
             "-filter_complex", filter_complex,
             "-map", "[outv]", "-map", "0:a?",
-            "-c:v", "h264_nvenc", "-preset", "p4", "-cq", "28", "-c:a", "aac", "-shortest",
+            *enc["ffmpeg_flags"], "-c:a", "aac", "-shortest",
             output_path,
         ]
 
@@ -172,6 +179,25 @@ def process_video_fast(input_path: str, output_path: str, title: str, font_path:
     finally:
         if os.path.exists(temp_text_img):
             os.remove(temp_text_img)
+
+
+def process_meme_image(input_path: str, output_path: str) -> None:
+    ffmpeg_bin = os.environ.get("FFMPEG_BINARY", "ffmpeg")
+    enc = get_encoder_config(ffmpeg_bin)
+    filter_complex = (
+        f"[0:v]scale={W}:{H}:force_original_aspect_ratio=decrease,"
+        f"pad={W}:{H}:(ow-iw)/2:(oh-ih)/2:color=black[outv]"
+    )
+    cmd = [
+        ffmpeg_bin, "-y",
+        "-loop", "1", "-i", input_path,
+        "-filter_complex", filter_complex,
+        "-map", "[outv]",
+        *enc["ffmpeg_flags"],
+        "-t", str(MEME_DURATION), "-r", "30",
+        output_path,
+    ]
+    subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
 
 
 def load_videos() -> list[dict]:
@@ -209,14 +235,25 @@ def main() -> None:
 
     videos = load_videos()
 
-    # Строим полный список работы: first + основные клипы + last
-    work: list[tuple[str, str, str, str]] = []  # (input, output, title, role)
+    first_work: list[tuple[str, str, str, str]] = []
+    main_work: list[tuple[str, str, str, str]] = []
+    meme_work: list[tuple[str, str, str, str]] = []
+    last_work: list[tuple[str, str, str, str]] = []
+
     if os.path.exists(FIRST_CLIP_PATH):
-        work.append((FIRST_CLIP_PATH, str(TEMP_DIR / "processed_first.mp4"), "", "first"))
+        first_work.append((FIRST_CLIP_PATH, str(TEMP_DIR / "processed_first.mp4"), "", "first"))
     for i, v in enumerate(videos):
-        work.append((v["filepath"], str(TEMP_DIR / f"processed_{i}.mp4"), v["title"], "main"))
+        main_work.append((v["filepath"], str(TEMP_DIR / f"processed_{i}.mp4"), v["title"], "main"))
     if os.path.exists(LAST_CLIP_PATH):
-        work.append((LAST_CLIP_PATH, str(TEMP_DIR / "processed_last.mp4"), "", "last"))
+        last_work.append((LAST_CLIP_PATH, str(TEMP_DIR / "processed_last.mp4"), "", "last"))
+
+    if MEME_DIR.exists():
+        meme_files = sorted(p for p in MEME_DIR.iterdir() if p.suffix.lower() in MEME_EXTENSIONS)
+        for j, meme_path in enumerate(meme_files):
+            meme_work.append((str(meme_path), str(TEMP_DIR / f"meme_{j}.mp4"), "", "meme"))
+
+    mid = len(main_work) // 2
+    work = first_work + main_work[:mid] + meme_work + main_work[mid:] + last_work
 
     manifest_clips: list[dict] = []
     manifest_skipped: list[dict] = []
@@ -229,7 +266,10 @@ def main() -> None:
         bar.set_postfix_str(f"{Path(input_path).name[:35]}", refresh=True)
         t0 = time.perf_counter()
         try:
-            process_video_fast(input_path, output_path, title, VIDEO_FONT_PATH, W, H)
+            if role == "meme":
+                process_meme_image(input_path, output_path)
+            else:
+                process_video_fast(input_path, output_path, title, VIDEO_FONT_PATH, W, H)
             elapsed = time.perf_counter() - t0
             elapsed_times.append(elapsed)
 

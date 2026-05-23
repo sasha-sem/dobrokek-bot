@@ -7,14 +7,17 @@ import json
 from collections import defaultdict
 
 # --- НАСТРОЙКИ ОКРУЖЕНИЯ ---
+import shutil
 wsl_native_path = "/usr/lib/wsl/lib"
 if os.path.exists(wsl_native_path):
     os.environ["LD_LIBRARY_PATH"] = f"{wsl_native_path}:" + os.environ.get("LD_LIBRARY_PATH", "")
-os.environ["FFMPEG_BINARY"] = "/usr/local/bin/ffmpeg"
+os.environ["FFMPEG_BINARY"] = shutil.which("ffmpeg") or "/usr/local/bin/ffmpeg"
 # ------------------------------------------------
 
-from moviepy import ColorClip, CompositeVideoClip, TextClip, AudioFileClip, vfx
+from moviepy import ColorClip, CompositeVideoClip, TextClip, AudioFileClip, VideoFileClip, vfx
 import math
+
+from hw_encoder import get_encoder_config
 
 # Константы (оставил только нужные для ассетов)
 BASE_DIR = Path(__file__).parent
@@ -22,11 +25,16 @@ W, H = 1920, 1080
 TITLE_FONT_PATH = str(BASE_DIR / "static/Roboto-Bold.ttf")
 INTRO_MUSIC = str(BASE_DIR / "static/intro.mp3")
 TITLE_DURATION = 11.0
+TITLE_TEXT_DURATION = 5.0
+TEXT_FADE_OUT = 1.5
+INTRO_BG_PATH = BASE_DIR / "export/intro_bg.mp4"
+MEME_PAUSE_DURATION = 10.0
 TRANSITION_DURATION = 0.6
 BPM = 150
 BEAT = 60 / BPM
 INPUT_FILE = BASE_DIR / "export/result.json"
 OUTRO_MUSIC = str(BASE_DIR / "static/outro.mp3")
+MEME_PAUSE_MUSIC = str(BASE_DIR / "static/meme_pause.mp3")
 EPISODE: int = 1  # overridden by --episode arg in main()
 
 # Создаем папку для ассетов, если её нет
@@ -68,39 +76,73 @@ def make_title_clip(episode: int) -> CompositeVideoClip:
         sx, sy = shake(t)
         return (int(sx + 10), int(CENTER_Y + sy + 2))
 
-    title_bg = ColorClip((W, H), color=(0, 0, 0), duration=TITLE_DURATION)
-    beat_flashes = make_beat_flashes(TITLE_DURATION, BEAT)
-
+    bg = VideoFileClip(str(INTRO_BG_PATH)).resized(new_size=(W, H))
+    text_dur = min(TITLE_TEXT_DURATION, bg.duration)
     title_text = f"АНТИДОБРОКЕК #{episode}"
 
     main_white = (
         TextClip(font=TITLE_FONT_PATH, text=title_text, color="white", font_size=130,
                  size=(W, 200), text_align="center", method="caption")
-        .with_duration(TITLE_DURATION)
-        .with_effects([vfx.FadeIn(0.04)])
+        .with_duration(text_dur)
+        .with_effects([vfx.FadeIn(0.04), vfx.FadeOut(TEXT_FADE_OUT)])
         .with_position(pos_white)
     )
     main_red = (
         TextClip(font=TITLE_FONT_PATH, text=title_text, color="#C81E1E", font_size=130,
                  size=(W, 200), text_align="center", method="caption")
-        .with_duration(TITLE_DURATION)
+        .with_duration(text_dur)
+        .with_effects([vfx.FadeOut(TEXT_FADE_OUT)])
         .with_position(pos_red)
     )
     main_blue = (
         TextClip(font=TITLE_FONT_PATH, text=title_text, color="#1E50DC", font_size=130,
                  size=(W, 200), text_align="center", method="caption")
-        .with_duration(TITLE_DURATION)
+        .with_duration(text_dur)
+        .with_effects([vfx.FadeOut(TEXT_FADE_OUT)])
         .with_position(pos_blue)
     )
 
+    return CompositeVideoClip([bg, main_red, main_blue, main_white])
+
+
+# ── Мемная пауза ──────────────────────────────────────────────────────────────
+def make_meme_pause_clip() -> CompositeVideoClip:
+    CENTER_Y = H // 2 - 100
+    duration = MEME_PAUSE_DURATION
+
+    def pos_white(t):
+        sx, sy = shake(t)
+        return (int(sx), int(CENTER_Y + sy))
+
+    def pos_red(t):
+        sx, sy = shake(t)
+        return (int(sx - 10), int(CENTER_Y + sy - 2))
+
+    def pos_blue(t):
+        sx, sy = shake(t)
+        return (int(sx + 10), int(CENTER_Y + sy + 2))
+
+    bg = ColorClip((W, H), color=(0, 0, 0), duration=duration)
+    flashes = make_beat_flashes(duration, BEAT)
+    text = "МЕМНАЯ ПАУЗА"
+
+    def make_layer(color, pos_fn):
+        return (
+            TextClip(font=TITLE_FONT_PATH, text=text, color=color, font_size=110,
+                     size=(W, 200), text_align="center", method="caption")
+            .with_duration(duration)
+            .with_effects([vfx.FadeIn(0.04)])
+            .with_position(pos_fn)
+        )
+
     clip = CompositeVideoClip(
-        [title_bg] + beat_flashes + [main_red, main_blue, main_white]
+        [bg] + flashes + [make_layer("#C81E1E", pos_red), make_layer("#1E50DC", pos_blue), make_layer("white", pos_white)]
     )
 
-    if os.path.exists(INTRO_MUSIC):
-        intro = AudioFileClip(INTRO_MUSIC).with_volume_scaled(
-            1.0).subclipped(0, TITLE_DURATION)
-        clip = clip.with_audio(intro)
+    if os.path.exists(MEME_PAUSE_MUSIC):
+        music = AudioFileClip(MEME_PAUSE_MUSIC).subclipped(0, duration)
+        clip = clip.with_audio(music)
+        print("Music added")
 
     return clip
 
@@ -202,7 +244,7 @@ def get_statistics() -> dict:
     return dict(stats)
 
 def make_end_clip(statistics: dict, episode: int) -> CompositeVideoClip:
-    END_DURATION = 4.65
+    END_DURATION = 10.0
     DONOR_FONT_SIZES = [72, 58, 48, 40, 34]
     DONOR_COLORS = ["#FFD700", "#C0C0C0", "#CD7F32", "#AAAAAA", "#AAAAAA"]
 
@@ -273,23 +315,18 @@ def main():
 
     print(f"Выпуск #{args.episode}")
 
+    ffmpeg_bin = os.environ.get("FFMPEG_BINARY", "ffmpeg")
+    enc = get_encoder_config(ffmpeg_bin)
+
     print("Рендерим Интро...")
     intro_clip = make_title_clip(args.episode)
     intro_clip.write_videofile(
         str(ASSETS_DIR / "intro.mp4"),
         fps=30,
-        codec="h264_nvenc",
+        codec=enc["codec"],
         audio_codec="aac",
-        threads=multiprocessing.cpu_count()
-    )
-
-    print("Рендерим Перебивку (Transition)...")
-    transition_clip = make_ad_transition()
-    transition_clip.write_videofile(
-        str(ASSETS_DIR / "transition.mp4"),
-        fps=30,
-        codec="h264_nvenc",
-        threads=multiprocessing.cpu_count()
+        threads=multiprocessing.cpu_count(),
+        **enc["moviepy_kwargs"]
     )
 
     print("Собираем статистику для Аутро...")
@@ -300,11 +337,22 @@ def main():
     outro_clip.write_videofile(
         str(ASSETS_DIR / "outro.mp4"),
         fps=30,
-        codec="h264_nvenc",
+        codec=enc["codec"],
         audio_codec="aac",
-        threads=multiprocessing.cpu_count()
+        threads=multiprocessing.cpu_count(),
+        **enc["moviepy_kwargs"]
     )
-    print("Готово! Ассеты (intro, transition, outro) сохранены в папку assets/")
+    print("Рендерим Мемную Паузу...")
+    meme_pause_clip = make_meme_pause_clip()
+    meme_pause_clip.write_videofile(
+        str(ASSETS_DIR / "meme_pause.mp4"),
+        fps=30,
+        codec=enc["codec"],
+        audio_codec="aac",
+        threads=multiprocessing.cpu_count(),
+        **enc["moviepy_kwargs"]
+    )
+    print("Готово! Ассеты (intro, outro, meme_pause) сохранены в папку assets/")
     
 if __name__ == "__main__":
     main()
