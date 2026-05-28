@@ -1,2 +1,3 @@
 from handlers.link_message_handler import handle_link_message
 from handlers.video_message_handler import handle_video_message
+from handlers.photo_message_handler import handle_photo_message
