@@ -240,7 +240,35 @@ def get_statistics() -> dict:
         for entity in message.get("text_entities", []):
             if entity["type"] == "code":
                 stats[entity["text"]] += 1
-                
+
+    return dict(stats)
+
+def get_photo_statistics() -> dict:
+    """Парсит JSON и собирает статистику присланных фото для «Героев мемной паузы»."""
+    if not INPUT_FILE.exists():
+        print(f"ВНИМАНИЕ: {INPUT_FILE} не найден. Статистика фото будет пустой.")
+        return {}
+
+    with open(INPUT_FILE, "r", encoding="utf-8") as f:
+        export_dict = json.load(f)
+
+    stats = defaultdict(int)
+    for message in export_dict.get("messages", []):
+        if "photo" not in message:
+            continue
+
+        skip = False
+        for entity in message.get("text_entities", []):
+            if entity["type"] == "hashtag" and entity["text"] == "#dobrokek":
+                skip = True
+                break
+        if skip:
+            continue
+
+        for entity in message.get("text_entities", []):
+            if entity["type"] == "code":
+                stats[entity["text"]] += 1
+
     return dict(stats)
 
 def make_end_clip(statistics: dict, episode: int) -> CompositeVideoClip:
@@ -308,6 +336,67 @@ def make_end_clip(statistics: dict, episode: int) -> CompositeVideoClip:
 
     return end_clip
 
+def make_meme_heroes_clip(statistics: dict) -> CompositeVideoClip:
+    """Финальная карточка мемной паузы: топ-5 авторов по числу присланных фото."""
+    END_DURATION = 10.0
+    HERO_FONT_SIZES = [72, 58, 48, 40, 34]
+    HERO_COLORS = ["#FFD700", "#C0C0C0", "#CD7F32", "#AAAAAA", "#AAAAAA"]
+
+    sorted_heroes = sorted(
+        statistics.items(), key=lambda x: x[1], reverse=True)[:5]
+
+    end_bg = ColorClip((W, H), color=(0, 0, 0), duration=END_DURATION)
+    end_title = (
+        TextClip(font=TITLE_FONT_PATH, text="ГЕРОИ МЕМНОЙ ПАУЗЫ", color="white", font_size=64,
+                 size=(W, int(H * 0.15)), text_align="center", method="caption")
+        .with_duration(END_DURATION).with_position(("center", 40))
+    )
+
+    HEROES_START_Y = 290
+    hero_clips = []
+    for i, (name, amount) in enumerate(sorted_heroes):
+        fs = HERO_FONT_SIZES[i] if i < len(HERO_FONT_SIZES) else 30
+        color = HERO_COLORS[i] if i < len(HERO_COLORS) else "#AAAAAA"
+        y = HEROES_START_Y + sum(
+            int((HERO_FONT_SIZES[j] if j < len(
+                HERO_FONT_SIZES) else 30) * 1.6)
+            for j in range(i)
+        )
+        hero_clips.append(
+            TextClip(font=TITLE_FONT_PATH, text=f"{i+1}. {name} – {amount}",
+                     color=color, font_size=fs, size=(W, int(fs * 1.6)),
+                     text_align="center", method="caption")
+            .with_duration(END_DURATION - i * 0.3)
+            .with_start(i * 0.3)
+            .with_effects([vfx.FadeIn(0.2)])
+            .with_position(("center", y))
+        )
+
+    thanks_y = HEROES_START_Y + sum(
+        int((HERO_FONT_SIZES[j] if j < len(HERO_FONT_SIZES) else 30) * 1.6)
+        for j in range(len(sorted_heroes))
+    ) + 20
+    thanks_clip = (
+        TextClip(font=TITLE_FONT_PATH, text="СПАСИБО ЗА МЕМЫ!",
+                 color="white", font_size=44, size=(W, 70),
+                 text_align="center", method="caption")
+        .with_duration(END_DURATION - len(sorted_heroes) * 0.3)
+        .with_start(len(sorted_heroes) * 0.3)
+        .with_effects([vfx.FadeIn(0.3)])
+        .with_position(("center", thanks_y))
+    )
+
+    end_clip = CompositeVideoClip(
+        [end_bg, end_title] + hero_clips + [thanks_clip])
+
+    music_path = MEME_PAUSE_MUSIC if os.path.exists(MEME_PAUSE_MUSIC) else OUTRO_MUSIC
+    if os.path.exists(music_path):
+        music = AudioFileClip(music_path).with_volume_scaled(
+            0.2).subclipped(0, END_DURATION)
+        end_clip = end_clip.with_audio(music)
+
+    return end_clip
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--episode", type=int, required=True, help="Номер выпуска, например: --episode 11")
@@ -352,7 +441,21 @@ def main():
         threads=multiprocessing.cpu_count(),
         **enc["moviepy_kwargs"]
     )
-    print("Готово! Ассеты (intro, outro, meme_pause) сохранены в папку assets/")
+
+    print("Собираем статистику по фото для Героев мемной паузы...")
+    photo_stats = get_photo_statistics()
+
+    print("Рендерим Героев мемной паузы...")
+    meme_heroes_clip = make_meme_heroes_clip(photo_stats)
+    meme_heroes_clip.write_videofile(
+        str(ASSETS_DIR / "meme_heroes.mp4"),
+        fps=30,
+        codec=enc["codec"],
+        audio_codec="aac",
+        threads=multiprocessing.cpu_count(),
+        **enc["moviepy_kwargs"]
+    )
+    print("Готово! Ассеты (intro, outro, meme_pause, meme_heroes) сохранены в папку assets/")
     
 if __name__ == "__main__":
     main()

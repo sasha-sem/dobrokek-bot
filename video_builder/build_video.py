@@ -58,14 +58,19 @@ def main() -> None:
         else:
             before_memes.append(clip)
 
-    # Собираем секцию мемов с паузой и музыкой
+    # Собираем секцию мемов: заставка -> мемы -> статистика «Герои мемной паузы»
     meme_section = None
     meme_pause_path = ASSETS_DIR / "meme_pause.mp4"
+    meme_heroes_path = ASSETS_DIR / "meme_heroes.mp4"
     if meme_clips_list:
         if meme_pause_path.exists():
-            meme_pause = VideoFileClip(str(meme_pause_path))
-            section_clips = [meme_pause] + meme_clips_list + [VideoFileClip(str(meme_pause_path))]
-            meme_section = concatenate_videoclips(section_clips, method="chain")
+            head = [VideoFileClip(str(meme_pause_path))]
+            if meme_heroes_path.exists():
+                tail = [VideoFileClip(str(meme_heroes_path))]
+            else:
+                print("ВНИМАНИЕ: assets/meme_heroes.mp4 не найдено. Используем заставку МЕМНОЙ ПАУЗЫ в конце. Запустите build_assets.py!")
+                tail = [VideoFileClip(str(meme_pause_path))]
+            meme_section = concatenate_videoclips(head + meme_clips_list + tail, method="chain")
             print(f"-> Добавляем МЕМНУЮ ПАУЗУ ({len(meme_clips_list)} мемов)...")
         else:
             print("ВНИМАНИЕ: assets/meme_pause.mp4 не найдено. Мемная пауза пропущена. Запустите build_assets.py!")

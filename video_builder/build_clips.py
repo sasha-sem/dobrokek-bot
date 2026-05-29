@@ -44,9 +44,8 @@ VIDEO_FONT_PATH = str(BASE_DIR / "static/Roboto-Regular.ttf")
 
 FIRST_CLIP_PATH = str(BASE_DIR / "export/first_clip.MP4")
 LAST_CLIP_PATH = str(BASE_DIR / "export/last_clip.mp4")
-MEME_DIR = BASE_DIR / "export/memes"
 MEME_DURATION = 5
-MEME_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
+MEME_CAPTION_H = 140
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -181,23 +180,56 @@ def process_video_fast(input_path: str, output_path: str, title: str, font_path:
             os.remove(temp_text_img)
 
 
-def process_meme_image(input_path: str, output_path: str) -> None:
+def process_meme_image(input_path: str, output_path: str, title: str = "", font_path: str = VIDEO_FONT_PATH) -> None:
+    """Превращает фото в клип на MEME_DURATION секунд: фото сверху, подпись автора снизу полосой."""
     ffmpeg_bin = os.environ.get("FFMPEG_BINARY", "ffmpeg")
     enc = get_encoder_config(ffmpeg_bin)
-    filter_complex = (
-        f"[0:v]scale={W}:{H}:force_original_aspect_ratio=decrease,"
-        f"pad={W}:{H}:(ow-iw)/2:(oh-ih)/2:color=black[outv]"
+
+    photo_h = H - MEME_CAPTION_H
+    has_text = bool(title.strip())
+    temp_text_img = f"temp_caption_{Path(input_path).stem}.tga"
+
+    if has_text:
+        pil_image = draw_text_pillow(title, font_path, font_size=28, image_size=(W, MEME_CAPTION_H))
+        pil_image.save(temp_text_img)
+
+    scale_pad = (
+        f"scale={W}:{photo_h}:force_original_aspect_ratio=decrease,"
+        f"pad={W}:{H}:(ow-iw)/2:({photo_h}-ih)/2:color=black"
     )
-    cmd = [
-        ffmpeg_bin, "-y",
-        "-loop", "1", "-i", input_path,
-        "-filter_complex", filter_complex,
-        "-map", "[outv]",
-        *enc["ffmpeg_flags"],
-        "-t", str(MEME_DURATION), "-r", "30",
-        output_path,
-    ]
-    subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+
+    if has_text:
+        filter_complex = (
+            f"[0:v]{scale_pad}[bg];"
+            f"[bg][1:v]overlay=0:{photo_h}[outv]"
+        )
+        cmd = [
+            ffmpeg_bin, "-y",
+            "-loop", "1", "-i", input_path,
+            "-loop", "1", "-i", temp_text_img,
+            "-filter_complex", filter_complex,
+            "-map", "[outv]",
+            *enc["ffmpeg_flags"],
+            "-t", str(MEME_DURATION), "-r", "30",
+            output_path,
+        ]
+    else:
+        filter_complex = f"[0:v]{scale_pad}[outv]"
+        cmd = [
+            ffmpeg_bin, "-y",
+            "-loop", "1", "-i", input_path,
+            "-filter_complex", filter_complex,
+            "-map", "[outv]",
+            *enc["ffmpeg_flags"],
+            "-t", str(MEME_DURATION), "-r", "30",
+            output_path,
+        ]
+
+    try:
+        subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    finally:
+        if os.path.exists(temp_text_img):
+            os.remove(temp_text_img)
 
 
 def load_videos() -> list[dict]:
@@ -225,6 +257,31 @@ def load_videos() -> list[dict]:
     return videos
 
 
+def load_photos() -> list[dict]:
+    """Читает export/result.json, возвращает перемешанный список {filepath, title} фото-мемов."""
+    with open(INPUT_FILE, encoding="utf-8") as f:
+        export_dict = json.load(f)
+
+    photos: list[dict] = []
+    for message in random.sample(export_dict["messages"], k=len(export_dict["messages"])):
+        if "photo" not in message:
+            continue
+        title, skip = "", False
+        for entity in message.get("text_entities", []):
+            if entity["type"] == "hashtag" and entity["text"] == "#dobrokek":
+                skip = True
+                break
+            elif entity["type"] in ("plain", "code"):
+                title += entity["text"].replace("\n\n", " ").strip() + " "
+        if skip:
+            continue
+        photos.append({
+            "filepath": str(INPUT_DIR / message["photo"]),
+            "title": demoji(title).strip(),
+        })
+    return photos
+
+
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 
@@ -247,10 +304,8 @@ def main() -> None:
     if os.path.exists(LAST_CLIP_PATH):
         last_work.append((LAST_CLIP_PATH, str(TEMP_DIR / "processed_last.mp4"), "", "last"))
 
-    if MEME_DIR.exists():
-        meme_files = sorted(p for p in MEME_DIR.iterdir() if p.suffix.lower() in MEME_EXTENSIONS)
-        for j, meme_path in enumerate(meme_files):
-            meme_work.append((str(meme_path), str(TEMP_DIR / f"meme_{j}.mp4"), "", "meme"))
+    for j, p in enumerate(load_photos()):
+        meme_work.append((p["filepath"], str(TEMP_DIR / f"meme_{j}.mp4"), p["title"], "meme"))
 
     mid = len(main_work) // 2
     work = first_work + main_work[:mid] + meme_work + main_work[mid:] + last_work
@@ -267,7 +322,7 @@ def main() -> None:
         t0 = time.perf_counter()
         try:
             if role == "meme":
-                process_meme_image(input_path, output_path)
+                process_meme_image(input_path, output_path, title, VIDEO_FONT_PATH)
             else:
                 process_video_fast(input_path, output_path, title, VIDEO_FONT_PATH, W, H)
             elapsed = time.perf_counter() - t0
