@@ -23,11 +23,10 @@ from hw_encoder import get_encoder_config
 BASE_DIR = Path(__file__).parent
 W, H = 1920, 1080
 TITLE_FONT_PATH = str(BASE_DIR / "static/Roboto-Bold.ttf")
+NUMBER_FONT_PATH = str(BASE_DIR / "static/BulbasaurSP.otf")
 INTRO_MUSIC = str(BASE_DIR / "static/intro.mp3")
-TITLE_DURATION = 11.0
-TITLE_TEXT_DURATION = 5.0
-TEXT_FADE_OUT = 1.5
 INTRO_BG_PATH = BASE_DIR / "export/intro_bg.mp4"
+INTRO_LOGO_PATH = BASE_DIR / "static/intro_text/ADK - Apple ProRes 4444  + Alfa no glow.mov"
 MEME_PAUSE_DURATION = 10.0
 TRANSITION_DURATION = 0.6
 BPM = 150
@@ -62,47 +61,33 @@ def make_beat_flashes(duration: float, beat: float, w: int = W, h: int = H) -> l
 
 
 def make_title_clip(episode: int) -> CompositeVideoClip:
-    CENTER_Y = H // 2 - 100
-
-    def pos_white(t):
-        sx, sy = shake(t)
-        return (int(sx), int(CENTER_Y + sy))
-
-    def pos_red(t):
-        sx, sy = shake(t)
-        return (int(sx - 10), int(CENTER_Y + sy - 2))
-
-    def pos_blue(t):
-        sx, sy = shake(t)
-        return (int(sx + 10), int(CENTER_Y + sy + 2))
-
     bg = VideoFileClip(str(INTRO_BG_PATH)).resized(new_size=(W, H))
-    text_dur = min(TITLE_TEXT_DURATION, bg.duration)
-    title_text = f"АНТИДОБРОКЕК #{episode}"
 
-    main_white = (
-        TextClip(font=TITLE_FONT_PATH, text=title_text, color="white", font_size=130,
-                 size=(W, 200), text_align="center", method="caption")
-        .with_duration(text_dur)
-        .with_effects([vfx.FadeIn(0.04), vfx.FadeOut(TEXT_FADE_OUT)])
-        .with_position(pos_white)
-    )
-    main_red = (
-        TextClip(font=TITLE_FONT_PATH, text=title_text, color="#C81E1E", font_size=130,
-                 size=(W, 200), text_align="center", method="caption")
-        .with_duration(text_dur)
-        .with_effects([vfx.FadeOut(TEXT_FADE_OUT)])
-        .with_position(pos_red)
-    )
-    main_blue = (
-        TextClip(font=TITLE_FONT_PATH, text=title_text, color="#1E50DC", font_size=130,
-                 size=(W, 200), text_align="center", method="caption")
-        .with_duration(text_dur)
-        .with_effects([vfx.FadeOut(TEXT_FADE_OUT)])
-        .with_position(pos_blue)
+    # Готовая анимированная заставка с альфа-каналом поверх фона.
+    # Стартует через LOGO_START секунд после начала фонового видео.
+    LOGO_START = 5.0
+    logo = (
+        VideoFileClip(str(INTRO_LOGO_PATH), has_mask=True)
+        .resized(new_size=(W, H))
+        .with_start(LOGO_START)
+        .with_position(("center", "center"))
     )
 
-    return CompositeVideoClip([bg, main_red, main_blue, main_white])
+    # Номер выпуска по центру кадра, шрифтом Bulbasaur — появляется после
+    # анимации заставки (когда логотип отыграл), держится 5с, фейд через альфу
+    BAND_H = 400
+    NUMBER_DURATION = 5.0
+    num_start = LOGO_START + logo.duration
+    number = (
+        TextClip(font=NUMBER_FONT_PATH, text=f"ВЫПУСК {episode}", color="#e7ff45",
+                 font_size=170, size=(W, BAND_H), text_align="center", method="caption")
+        .with_start(num_start)
+        .with_duration(NUMBER_DURATION)
+        .with_effects([vfx.CrossFadeIn(1.2), vfx.CrossFadeOut(1.0)])
+        .with_position("center")
+    )
+
+    return CompositeVideoClip([bg, logo, number])
 
 
 # ── Мемная пауза ──────────────────────────────────────────────────────────────
