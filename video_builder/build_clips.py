@@ -44,7 +44,7 @@ VIDEO_FONT_PATH = str(BASE_DIR / "static/Roboto-Regular.ttf")
 
 FIRST_CLIP_PATH = str(BASE_DIR / "export/first_clip.MP4")
 LAST_CLIP_PATH = str(BASE_DIR / "export/last_clip.mp4")
-MEME_DURATION = 5
+MEME_DURATION = 7
 MEME_CAPTION_H = 140
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -114,6 +114,7 @@ def process_video_fast(input_path: str, output_path: str, title: str, font_path:
 
     clip = VideoFileClip(input_path)
     orig_w, orig_h = clip.w, clip.h
+    has_audio = clip.audio is not None
     clip.close()
 
     new_h = h
@@ -139,6 +140,12 @@ def process_video_fast(input_path: str, output_path: str, title: str, font_path:
     ffmpeg_bin = os.environ.get("FFMPEG_BINARY", "ffmpeg")
     enc = get_encoder_config(ffmpeg_bin)
 
+    # Нормализуем аудио: каждый клип получает aac 48к стерео. Если у исходника
+    # нет звука — подмешиваем тишину (anullsrc), чтобы поток был совместим для
+    # последующей склейки через concat -c copy в build_video.py.
+    silence_input = ["-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=48000"]
+    audio_flags = ["-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-ac", "2"]
+
     if has_text:
         filter_complex = (
             f"[0:v]scale={new_w}:{new_h}[vid];"
@@ -146,13 +153,17 @@ def process_video_fast(input_path: str, output_path: str, title: str, font_path:
             f"[bg][vid]overlay=(W-w)/2:(H-h)/2:shortest=1[bg_vid];"
             f"[bg_vid][1:v]overlay=W-w:0:shortest=1[outv]"
         )
+        # input 0 = видео, input 1 = картинка с текстом, (input 2 = тишина, если нужна)
+        silence = [] if has_audio else silence_input
+        audio_map = "0:a" if has_audio else "2:a"
         cmd = [
             ffmpeg_bin, "-y",
             "-i", input_path,
             "-loop", "1", "-i", temp_text_img,
+            *silence,
             "-filter_complex", filter_complex,
-            "-map", "[outv]", "-map", "0:a?",
-            *enc["ffmpeg_flags"], "-c:a", "aac", "-shortest",
+            "-map", "[outv]", "-map", audio_map,
+            *enc["ffmpeg_flags"], *audio_flags, "-r", "30", "-shortest",
             output_path,
         ]
     else:
@@ -161,12 +172,16 @@ def process_video_fast(input_path: str, output_path: str, title: str, font_path:
             f"color=c=black:s={w}x{h}[bg];"
             f"[bg][vid]overlay=(W-w)/2:(H-h)/2:shortest=1[outv]"
         )
+        # input 0 = видео, (input 1 = тишина, если нужна)
+        silence = [] if has_audio else silence_input
+        audio_map = "0:a" if has_audio else "1:a"
         cmd = [
             ffmpeg_bin, "-y",
             "-i", input_path,
+            *silence,
             "-filter_complex", filter_complex,
-            "-map", "[outv]", "-map", "0:a?",
-            *enc["ffmpeg_flags"], "-c:a", "aac", "-shortest",
+            "-map", "[outv]", "-map", audio_map,
+            *enc["ffmpeg_flags"], *audio_flags, "-r", "30", "-shortest",
             output_path,
         ]
 
@@ -198,29 +213,43 @@ def process_meme_image(input_path: str, output_path: str, title: str = "", font_
         f"pad={W}:{H}:(ow-iw)/2:({photo_h}-ih)/2:color=black"
     )
 
+    # Мем-клипы немые — подмешиваем тишину (aac 48к стерео), чтобы поток был
+    # совместим со склейкой concat -c copy в build_video.py.
+    silence_input = ["-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=48000"]
+    audio_flags = ["-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-ac", "2"]
+
     if has_text:
+        # crop в конце страхует от нечётной высоты (1081): scale+overlay при
+        # некоторых пропорциях даёт лишний пиксель, что ломает H.264 и
+        # последующую lossless-склейку. Жёстко приводим к ровным W×H.
         filter_complex = (
             f"[0:v]{scale_pad}[bg];"
-            f"[bg][1:v]overlay=0:{photo_h}[outv]"
+            f"[bg][1:v]overlay=0:{photo_h},crop={W}:{H}:0:0[outv]"
         )
+        # input 0 = фото, input 1 = текст, input 2 = тишина
+        audio_map = "2:a"
         cmd = [
             ffmpeg_bin, "-y",
             "-loop", "1", "-i", input_path,
             "-loop", "1", "-i", temp_text_img,
+            *silence_input,
             "-filter_complex", filter_complex,
-            "-map", "[outv]",
-            *enc["ffmpeg_flags"],
+            "-map", "[outv]", "-map", audio_map,
+            *enc["ffmpeg_flags"], *audio_flags,
             "-t", str(MEME_DURATION), "-r", "30",
             output_path,
         ]
     else:
-        filter_complex = f"[0:v]{scale_pad}[outv]"
+        filter_complex = f"[0:v]{scale_pad},crop={W}:{H}:0:0[outv]"
+        # input 0 = фото, input 1 = тишина
+        audio_map = "1:a"
         cmd = [
             ffmpeg_bin, "-y",
             "-loop", "1", "-i", input_path,
+            *silence_input,
             "-filter_complex", filter_complex,
-            "-map", "[outv]",
-            *enc["ffmpeg_flags"],
+            "-map", "[outv]", "-map", audio_map,
+            *enc["ffmpeg_flags"], *audio_flags,
             "-t", str(MEME_DURATION), "-r", "30",
             output_path,
         ]

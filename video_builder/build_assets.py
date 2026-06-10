@@ -14,8 +14,9 @@ if os.path.exists(wsl_native_path):
 os.environ["FFMPEG_BINARY"] = shutil.which("ffmpeg") or "/usr/local/bin/ffmpeg"
 # ------------------------------------------------
 
-from moviepy import ColorClip, CompositeVideoClip, TextClip, AudioFileClip, VideoFileClip, vfx
+from moviepy import ColorClip, CompositeVideoClip, TextClip, ImageClip, AudioClip, AudioFileClip, VideoFileClip, vfx
 import math
+import numpy as np
 
 from hw_encoder import get_encoder_config
 
@@ -24,9 +25,12 @@ BASE_DIR = Path(__file__).parent
 W, H = 1920, 1080
 TITLE_FONT_PATH = str(BASE_DIR / "static/Roboto-Bold.ttf")
 NUMBER_FONT_PATH = str(BASE_DIR / "static/BulbasaurSP.otf")
+LEADERBOARD_FONT_PATH = str(BASE_DIR / "static/Onest-SemiBold.ttf")
+EPISODE_NUMBER_FONT_PATH = str(BASE_DIR / "static/Ck Blockhead.ttf")
+LEADERBOARD_BG_PATH = str(BASE_DIR / "static/leaderboard.png")
 INTRO_MUSIC = str(BASE_DIR / "static/intro.mp3")
 INTRO_BG_PATH = BASE_DIR / "export/intro_bg.mp4"
-INTRO_LOGO_PATH = BASE_DIR / "static/intro_text/ADK - Apple ProRes 4444  + Alfa no glow.mov"
+INTRO_LOGO_PATH = BASE_DIR / "static/intro_text.mov"
 MEME_PAUSE_DURATION = 10.0
 TRANSITION_DURATION = 0.6
 BPM = 150
@@ -264,14 +268,20 @@ def make_end_clip(statistics: dict, episode: int) -> CompositeVideoClip:
     sorted_donors = sorted(
         statistics.items(), key=lambda x: x[1], reverse=True)[:5]
 
-    end_bg = ColorClip((W, H), color=(0, 0, 0), duration=END_DURATION)
-    end_title = (
-        TextClip(font=TITLE_FONT_PATH, text=f"АНТИДОБРОКЕК #{episode}", color="white", font_size=64,
-                 size=(W, int(H * 0.15)), text_align="center", method="caption")
-        .with_duration(END_DURATION).with_position(("center", 40))
+    if os.path.exists(LEADERBOARD_BG_PATH):
+        end_bg = ImageClip(LEADERBOARD_BG_PATH).with_duration(END_DURATION)
+    else:
+        end_bg = ColorClip((W, H), color=(0, 0, 0), duration=END_DURATION)
+
+    # Номер выпуска рядом с надписью "ANTIDOBROKEK" из leaderboard.png.
+    # Заголовок на картинке занимает примерно x 317–1450, y 35–126.
+    end_number = (
+        TextClip(font=EPISODE_NUMBER_FONT_PATH, text=f"{episode}", color="#e7ff45",
+                 font_size=150, size=(320, 200), text_align="left", method="caption")
+        .with_duration(END_DURATION).with_position((1420, -20))
     )
     end_label = (
-        TextClip(font=TITLE_FONT_PATH, text="ТОП АНТИДОБРОКЕКЕРОВ ВЫПУСКА",
+        TextClip(font=LEADERBOARD_FONT_PATH, text="ТОП АНТИДОБРОКЕКЕРОВ ВЫПУСКА",
                  color="#CCCCCC", font_size=40,
                  size=(W, int(H * 0.1)), text_align="center", method="caption")
         .with_duration(END_DURATION).with_position(("center", 155))
@@ -288,7 +298,7 @@ def make_end_clip(statistics: dict, episode: int) -> CompositeVideoClip:
             for j in range(i)
         )
         donor_clips.append(
-            TextClip(font=TITLE_FONT_PATH, text=f"{i+1}. {name} – {amount}",
+            TextClip(font=LEADERBOARD_FONT_PATH, text=f"{i+1}. {name} – {amount}",
                      color=color, font_size=fs, size=(W, int(fs * 1.6)),
                      text_align="center", method="caption")
             .with_duration(END_DURATION - i * 0.3)
@@ -302,7 +312,7 @@ def make_end_clip(statistics: dict, episode: int) -> CompositeVideoClip:
         for j in range(len(sorted_donors))
     ) + 20
     thanks_clip = (
-        TextClip(font=TITLE_FONT_PATH, text="ВСЕМ СПАСИБО ЗА ВИДЕО!",
+        TextClip(font=LEADERBOARD_FONT_PATH, text="ВСЕМ СПАСИБО ЗА ВИДЕО!",
                  color="white", font_size=44, size=(W, 70),
                  text_align="center", method="caption")
         .with_duration(END_DURATION - len(sorted_donors) * 0.3)
@@ -312,7 +322,7 @@ def make_end_clip(statistics: dict, episode: int) -> CompositeVideoClip:
     )
 
     end_clip = CompositeVideoClip(
-        [end_bg, end_title, end_label] + donor_clips + [thanks_clip])
+        [end_bg, end_number, end_label] + donor_clips + [thanks_clip])
 
     if os.path.exists(OUTRO_MUSIC):
         outro = AudioFileClip(OUTRO_MUSIC).with_volume_scaled(
@@ -332,7 +342,7 @@ def make_meme_heroes_clip(statistics: dict) -> CompositeVideoClip:
 
     end_bg = ColorClip((W, H), color=(0, 0, 0), duration=END_DURATION)
     end_title = (
-        TextClip(font=TITLE_FONT_PATH, text="ГЕРОИ МЕМНОЙ ПАУЗЫ", color="white", font_size=64,
+        TextClip(font=LEADERBOARD_FONT_PATH, text="ГЕРОИ МЕМНОЙ ПАУЗЫ", color="white", font_size=64,
                  size=(W, int(H * 0.15)), text_align="center", method="caption")
         .with_duration(END_DURATION).with_position(("center", 40))
     )
@@ -348,7 +358,7 @@ def make_meme_heroes_clip(statistics: dict) -> CompositeVideoClip:
             for j in range(i)
         )
         hero_clips.append(
-            TextClip(font=TITLE_FONT_PATH, text=f"{i+1}. {name} – {amount}",
+            TextClip(font=LEADERBOARD_FONT_PATH, text=f"{i+1}. {name} – {amount}",
                      color=color, font_size=fs, size=(W, int(fs * 1.6)),
                      text_align="center", method="caption")
             .with_duration(END_DURATION - i * 0.3)
@@ -362,7 +372,7 @@ def make_meme_heroes_clip(statistics: dict) -> CompositeVideoClip:
         for j in range(len(sorted_heroes))
     ) + 20
     thanks_clip = (
-        TextClip(font=TITLE_FONT_PATH, text="СПАСИБО ЗА МЕМЫ!",
+        TextClip(font=LEADERBOARD_FONT_PATH, text="СПАСИБО ЗА МЕМЫ!",
                  color="white", font_size=44, size=(W, 70),
                  text_align="center", method="caption")
         .with_duration(END_DURATION - len(sorted_heroes) * 0.3)
@@ -385,62 +395,74 @@ def make_meme_heroes_clip(statistics: dict) -> CompositeVideoClip:
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--episode", type=int, required=True, help="Номер выпуска, например: --episode 11")
+    parser.add_argument("--intro", action="store_true", help="Сгенерировать интро (intro.mp4)")
+    parser.add_argument("--outro", action="store_true", help="Сгенерировать аутро/лидерборд (outro.mp4)")
+    parser.add_argument("--meme-pause", action="store_true", help="Сгенерировать мемную паузу (meme_pause.mp4)")
+    parser.add_argument("--meme-heroes", action="store_true", help="Сгенерировать героев мемной паузы (meme_heroes.mp4)")
     args = parser.parse_args()
 
+    # Если ни один флаг ассета не передан — генерим все.
+    selected = {
+        "intro": args.intro,
+        "outro": args.outro,
+        "meme_pause": args.meme_pause,
+        "meme_heroes": args.meme_heroes,
+    }
+    if not any(selected.values()):
+        selected = {k: True for k in selected}
+
     print(f"Выпуск #{args.episode}")
+    print("Генерируем: " + ", ".join(k for k, v in selected.items() if v))
 
     ffmpeg_bin = os.environ.get("FFMPEG_BINARY", "ffmpeg")
     enc = get_encoder_config(ffmpeg_bin)
 
-    print("Рендерим Интро...")
-    intro_clip = make_title_clip(args.episode)
-    intro_clip.write_videofile(
-        str(ASSETS_DIR / "intro.mp4"),
-        fps=30,
-        codec=enc["codec"],
-        audio_codec="aac",
-        threads=multiprocessing.cpu_count(),
-        **enc["moviepy_kwargs"]
-    )
+    def _silent_audio(duration: float, fps: int = 48000):
+        """Тихая стерео-дорожка нужной длины (для ассетов без звука)."""
+        def make_frame(t):
+            t = np.asarray(t)
+            return np.zeros((t.shape[0], 2)) if t.ndim else np.zeros(2)
+        return AudioClip(make_frame, duration=duration, fps=fps)
 
-    print("Собираем статистику для Аутро...")
-    stats = get_statistics()
+    def render(clip, filename):
+        # Гарантируем аудиодорожку и единый формат аудио (aac 48к стерео),
+        # чтобы ассеты можно было склеить с клипами через concat -c copy.
+        if clip.audio is None:
+            clip = clip.with_audio(_silent_audio(clip.duration))
+        kwargs = dict(enc["moviepy_kwargs"])
+        ffmpeg_params = list(kwargs.pop("ffmpeg_params", [])) + ["-ar", "48000", "-ac", "2"]
+        clip.write_videofile(
+            str(ASSETS_DIR / filename),
+            fps=30,
+            codec=enc["codec"],
+            audio_codec="aac",
+            audio_bitrate="192k",
+            threads=multiprocessing.cpu_count(),
+            ffmpeg_params=ffmpeg_params,
+            **kwargs,
+        )
 
-    print("Рендерим Аутро (End clip)...")
-    outro_clip = make_end_clip(stats, args.episode)
-    outro_clip.write_videofile(
-        str(ASSETS_DIR / "outro.mp4"),
-        fps=30,
-        codec=enc["codec"],
-        audio_codec="aac",
-        threads=multiprocessing.cpu_count(),
-        **enc["moviepy_kwargs"]
-    )
-    print("Рендерим Мемную Паузу...")
-    meme_pause_clip = make_meme_pause_clip()
-    meme_pause_clip.write_videofile(
-        str(ASSETS_DIR / "meme_pause.mp4"),
-        fps=30,
-        codec=enc["codec"],
-        audio_codec="aac",
-        threads=multiprocessing.cpu_count(),
-        **enc["moviepy_kwargs"]
-    )
+    if selected["intro"]:
+        print("Рендерим Интро...")
+        render(make_title_clip(args.episode), "intro.mp4")
 
-    print("Собираем статистику по фото для Героев мемной паузы...")
-    photo_stats = get_photo_statistics()
+    if selected["outro"]:
+        print("Собираем статистику для Аутро...")
+        stats = get_statistics()
+        print("Рендерим Аутро (End clip)...")
+        render(make_end_clip(stats, args.episode), "outro.mp4")
 
-    print("Рендерим Героев мемной паузы...")
-    meme_heroes_clip = make_meme_heroes_clip(photo_stats)
-    meme_heroes_clip.write_videofile(
-        str(ASSETS_DIR / "meme_heroes.mp4"),
-        fps=30,
-        codec=enc["codec"],
-        audio_codec="aac",
-        threads=multiprocessing.cpu_count(),
-        **enc["moviepy_kwargs"]
-    )
-    print("Готово! Ассеты (intro, outro, meme_pause, meme_heroes) сохранены в папку assets/")
-    
+    if selected["meme_pause"]:
+        print("Рендерим Мемную Паузу...")
+        render(make_meme_pause_clip(), "meme_pause.mp4")
+
+    if selected["meme_heroes"]:
+        print("Собираем статистику по фото для Героев мемной паузы...")
+        photo_stats = get_photo_statistics()
+        print("Рендерим Героев мемной паузы...")
+        render(make_meme_heroes_clip(photo_stats), "meme_heroes.mp4")
+
+    print("Готово! Ассеты (" + ", ".join(k for k, v in selected.items() if v) + ") сохранены в папку assets/")
+
 if __name__ == "__main__":
     main()

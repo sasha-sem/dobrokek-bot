@@ -22,20 +22,20 @@ def get_encoder_config(ffmpeg_bin: str) -> dict:
     if "h264_nvenc" in encoders:
         _cached_config = {
             "codec": "h264_nvenc",
-            "ffmpeg_flags": ["-c:v", "h264_nvenc", "-preset", "p4", "-cq", "28"],
-            "moviepy_kwargs": {"preset": "p4", "ffmpeg_params": ["-cq", "28"]},
+            "ffmpeg_flags": ["-c:v", "h264_nvenc", "-preset", "p4", "-cq", "19", "-pix_fmt", "yuv420p"],
+            "moviepy_kwargs": {"preset": "p4", "ffmpeg_params": ["-cq", "19", "-pix_fmt", "yuv420p"]},
         }
     elif "h264_videotoolbox" in encoders:
         _cached_config = {
             "codec": "h264_videotoolbox",
-            "ffmpeg_flags": ["-c:v", "h264_videotoolbox", "-q:v", "65"],
-            "moviepy_kwargs": {"ffmpeg_params": ["-q:v", "65"]},
+            "ffmpeg_flags": ["-c:v", "h264_videotoolbox", "-q:v", "80", "-pix_fmt", "yuv420p"],
+            "moviepy_kwargs": {"ffmpeg_params": ["-q:v", "80", "-pix_fmt", "yuv420p"]},
         }
     else:
         _cached_config = {
             "codec": "libx264",
-            "ffmpeg_flags": ["-c:v", "libx264", "-preset", "fast", "-crf", "28"],
-            "moviepy_kwargs": {"preset": "fast", "ffmpeg_params": ["-crf", "28"]},
+            "ffmpeg_flags": ["-c:v", "libx264", "-preset", "fast", "-crf", "19", "-pix_fmt", "yuv420p"],
+            "moviepy_kwargs": {"preset": "fast", "ffmpeg_params": ["-crf", "19", "-pix_fmt", "yuv420p"]},
         }
 
     print(f"[encoder] Используем: {_cached_config['codec']}")
