@@ -19,15 +19,13 @@ import math
 import numpy as np
 
 from hw_encoder import get_encoder_config
+from leaderboard_render import render_video, Participant
 
 # Константы (оставил только нужные для ассетов)
 BASE_DIR = Path(__file__).parent
 W, H = 1920, 1080
 TITLE_FONT_PATH = str(BASE_DIR / "static/Roboto-Bold.ttf")
 NUMBER_FONT_PATH = str(BASE_DIR / "static/BulbasaurSP.otf")
-LEADERBOARD_FONT_PATH = str(BASE_DIR / "static/Onest-SemiBold.ttf")
-EPISODE_NUMBER_FONT_PATH = str(BASE_DIR / "static/Ck Blockhead.ttf")
-LEADERBOARD_BG_PATH = str(BASE_DIR / "static/leaderboard.png")
 INTRO_MUSIC = str(BASE_DIR / "static/intro.mp3")
 INTRO_BG_PATH = BASE_DIR / "export/intro_bg.mp4"
 INTRO_LOGO_PATH = BASE_DIR / "static/intro_text.mov"
@@ -36,9 +34,13 @@ TRANSITION_DURATION = 0.6
 BPM = 150
 BEAT = 60 / BPM
 INPUT_FILE = BASE_DIR / "export/result.json"
-OUTRO_MUSIC = str(BASE_DIR / "static/outro.mp3")
 MEME_PAUSE_MUSIC = str(BASE_DIR / "static/meme_pause.mp3")
 EPISODE: int = 1  # overridden by --episode arg in main()
+
+HEROES_END_HOLD = 5.0
+LEADERBOARD_TITLE = "ТОП АНТИДОБРОКЕКЕРОВ ВЫПУСКА"
+LEADERBOARD_FOOTER = "ВСЕМ СПАСИБО ЗА ВИДЕО!"
+HEROES_FOOTER = "СПАСИБО ЗА МЕМЫ!"
 
 # Создаем папку для ассетов, если её нет
 ASSETS_DIR = BASE_DIR / "assets"
@@ -260,137 +262,9 @@ def get_photo_statistics() -> dict:
 
     return dict(stats)
 
-def make_end_clip(statistics: dict, episode: int) -> CompositeVideoClip:
-    END_DURATION = 10.0
-    DONOR_FONT_SIZES = [72, 58, 48, 40, 34]
-    DONOR_COLORS = ["#FFD700", "#C0C0C0", "#CD7F32", "#AAAAAA", "#AAAAAA"]
-
-    sorted_donors = sorted(
-        statistics.items(), key=lambda x: x[1], reverse=True)[:5]
-
-    if os.path.exists(LEADERBOARD_BG_PATH):
-        end_bg = ImageClip(LEADERBOARD_BG_PATH).with_duration(END_DURATION)
-    else:
-        end_bg = ColorClip((W, H), color=(0, 0, 0), duration=END_DURATION)
-
-    # Номер выпуска рядом с надписью "ANTIDOBROKEK" из leaderboard.png.
-    # Заголовок на картинке занимает примерно x 317–1450, y 35–126.
-    end_number = (
-        TextClip(font=EPISODE_NUMBER_FONT_PATH, text=f"{episode}", color="#e7ff45",
-                 font_size=150, size=(320, 200), text_align="left", method="caption")
-        .with_duration(END_DURATION).with_position((1420, -20))
-    )
-    end_label = (
-        TextClip(font=LEADERBOARD_FONT_PATH, text="ТОП АНТИДОБРОКЕКЕРОВ ВЫПУСКА",
-                 color="#CCCCCC", font_size=40,
-                 size=(W, int(H * 0.1)), text_align="center", method="caption")
-        .with_duration(END_DURATION).with_position(("center", 155))
-    )
-
-    DONORS_START_Y = 290
-    donor_clips = []
-    for i, (name, amount) in enumerate(sorted_donors):
-        fs = DONOR_FONT_SIZES[i] if i < len(DONOR_FONT_SIZES) else 30
-        color = DONOR_COLORS[i] if i < len(DONOR_COLORS) else "#AAAAAA"
-        y = DONORS_START_Y + sum(
-            int((DONOR_FONT_SIZES[j] if j < len(
-                DONOR_FONT_SIZES) else 30) * 1.6)
-            for j in range(i)
-        )
-        donor_clips.append(
-            TextClip(font=LEADERBOARD_FONT_PATH, text=f"{i+1}. {name} – {amount}",
-                     color=color, font_size=fs, size=(W, int(fs * 1.6)),
-                     text_align="center", method="caption")
-            .with_duration(END_DURATION - i * 0.3)
-            .with_start(i * 0.3)
-            .with_effects([vfx.FadeIn(0.2)])
-            .with_position(("center", y))
-        )
-
-    thanks_y = DONORS_START_Y + sum(
-        int((DONOR_FONT_SIZES[j] if j < len(DONOR_FONT_SIZES) else 30) * 1.6)
-        for j in range(len(sorted_donors))
-    ) + 20
-    thanks_clip = (
-        TextClip(font=LEADERBOARD_FONT_PATH, text="ВСЕМ СПАСИБО ЗА ВИДЕО!",
-                 color="white", font_size=44, size=(W, 70),
-                 text_align="center", method="caption")
-        .with_duration(END_DURATION - len(sorted_donors) * 0.3)
-        .with_start(len(sorted_donors) * 0.3)
-        .with_effects([vfx.FadeIn(0.3)])
-        .with_position(("center", thanks_y))
-    )
-
-    end_clip = CompositeVideoClip(
-        [end_bg, end_number, end_label] + donor_clips + [thanks_clip])
-
-    if os.path.exists(OUTRO_MUSIC):
-        outro = AudioFileClip(OUTRO_MUSIC).with_volume_scaled(
-            0.2).subclipped(0, END_DURATION)
-        end_clip = end_clip.with_audio(outro)
-
-    return end_clip
-
-def make_meme_heroes_clip(statistics: dict) -> CompositeVideoClip:
-    """Финальная карточка мемной паузы: топ-5 авторов по числу присланных фото."""
-    END_DURATION = 10.0
-    HERO_FONT_SIZES = [72, 58, 48, 40, 34]
-    HERO_COLORS = ["#FFD700", "#C0C0C0", "#CD7F32", "#AAAAAA", "#AAAAAA"]
-
-    sorted_heroes = sorted(
-        statistics.items(), key=lambda x: x[1], reverse=True)[:5]
-
-    end_bg = ColorClip((W, H), color=(0, 0, 0), duration=END_DURATION)
-    end_title = (
-        TextClip(font=LEADERBOARD_FONT_PATH, text="ГЕРОИ МЕМНОЙ ПАУЗЫ", color="white", font_size=64,
-                 size=(W, int(H * 0.15)), text_align="center", method="caption")
-        .with_duration(END_DURATION).with_position(("center", 40))
-    )
-
-    HEROES_START_Y = 290
-    hero_clips = []
-    for i, (name, amount) in enumerate(sorted_heroes):
-        fs = HERO_FONT_SIZES[i] if i < len(HERO_FONT_SIZES) else 30
-        color = HERO_COLORS[i] if i < len(HERO_COLORS) else "#AAAAAA"
-        y = HEROES_START_Y + sum(
-            int((HERO_FONT_SIZES[j] if j < len(
-                HERO_FONT_SIZES) else 30) * 1.6)
-            for j in range(i)
-        )
-        hero_clips.append(
-            TextClip(font=LEADERBOARD_FONT_PATH, text=f"{i+1}. {name} – {amount}",
-                     color=color, font_size=fs, size=(W, int(fs * 1.6)),
-                     text_align="center", method="caption")
-            .with_duration(END_DURATION - i * 0.3)
-            .with_start(i * 0.3)
-            .with_effects([vfx.FadeIn(0.2)])
-            .with_position(("center", y))
-        )
-
-    thanks_y = HEROES_START_Y + sum(
-        int((HERO_FONT_SIZES[j] if j < len(HERO_FONT_SIZES) else 30) * 1.6)
-        for j in range(len(sorted_heroes))
-    ) + 20
-    thanks_clip = (
-        TextClip(font=LEADERBOARD_FONT_PATH, text="СПАСИБО ЗА МЕМЫ!",
-                 color="white", font_size=44, size=(W, 70),
-                 text_align="center", method="caption")
-        .with_duration(END_DURATION - len(sorted_heroes) * 0.3)
-        .with_start(len(sorted_heroes) * 0.3)
-        .with_effects([vfx.FadeIn(0.3)])
-        .with_position(("center", thanks_y))
-    )
-
-    end_clip = CompositeVideoClip(
-        [end_bg, end_title] + hero_clips + [thanks_clip])
-
-    music_path = MEME_PAUSE_MUSIC if os.path.exists(MEME_PAUSE_MUSIC) else OUTRO_MUSIC
-    if os.path.exists(music_path):
-        music = AudioFileClip(music_path).with_volume_scaled(
-            0.2).subclipped(0, END_DURATION)
-        end_clip = end_clip.with_audio(music)
-
-    return end_clip
+def _stats_to_participants(stats: dict) -> list:
+    sorted_items = sorted(stats.items(), key=lambda x: x[1], reverse=True)[:5]
+    return [Participant(name=name, count=count) for name, count in sorted_items]
 
 def main():
     parser = argparse.ArgumentParser()
@@ -449,8 +323,15 @@ def main():
     if selected["outro"]:
         print("Собираем статистику для Аутро...")
         stats = get_statistics()
-        print("Рендерим Аутро (End clip)...")
-        render(make_end_clip(stats, args.episode), "outro.mp4")
+        print("Рендерим Аутро (leaderboard)...")
+        render_video(
+            participants=_stats_to_participants(stats),
+            mode="leaderboard",
+            title=LEADERBOARD_TITLE,
+            footer=LEADERBOARD_FOOTER,
+            episode=str(args.episode),
+            output_path=str(ASSETS_DIR / "outro.mp4"),
+        )
 
     if selected["meme_pause"]:
         print("Рендерим Мемную Паузу...")
@@ -460,7 +341,15 @@ def main():
         print("Собираем статистику по фото для Героев мемной паузы...")
         photo_stats = get_photo_statistics()
         print("Рендерим Героев мемной паузы...")
-        render(make_meme_heroes_clip(photo_stats), "meme_heroes.mp4")
+        render_video(
+            participants=_stats_to_participants(photo_stats),
+            mode="heroes",
+            show_title=False,
+            footer=HEROES_FOOTER,
+            episode=str(args.episode),
+            output_path=str(ASSETS_DIR / "meme_heroes.mp4"),
+            end_hold=HEROES_END_HOLD,
+        )
 
     print("Готово! Ассеты (" + ", ".join(k for k, v in selected.items() if v) + ") сохранены в папку assets/")
 

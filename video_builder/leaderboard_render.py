@@ -11,12 +11,14 @@ from __future__ import annotations
 
 import subprocess
 import sys
+import shutil
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 from dataclasses import dataclass
 from pathlib import Path
 
 from audio_gen import build_audio_track, SR
+from hw_encoder import get_encoder_config
 
 # ============================================================
 # КОНСТАНТЫ (1:1 с оригинальным JS)
@@ -90,18 +92,18 @@ PLUS_SIGN_FONT_SIZE = 16  # уменьшено с 22 - заметно компа
 HEADER_PADDING_TOP = 212
 FOOTER_PADDING_BOTTOM = 148
 
-ASSETS_DIR = Path(__file__).parent / "assets"
-FONT_ONEST = str(ASSETS_DIR / "Onest-SemiBold.ttf")
-FONT_ONEST_REGULAR = str(ASSETS_DIR / "Onest-Regular.ttf")
-FONT_ONEST_EXTRABOLD = str(ASSETS_DIR / "Onest-ExtraBold.ttf")
-FONT_EPISODE = str(ASSETS_DIR / "Ck_Blockhead.ttf")
+STATIC_DIR = Path(__file__).parent / "static"
+FONT_ONEST = str(STATIC_DIR / "Onest-SemiBold.ttf")
+FONT_ONEST_REGULAR = str(STATIC_DIR / "Onest-Regular.ttf")
+FONT_ONEST_EXTRABOLD = str(STATIC_DIR / "Onest-ExtraBold.ttf")
+FONT_EPISODE = str(STATIC_DIR / "Ck_Blockhead.ttf")
 
 TITLE_FONT_SIZE = 42  # уменьшено с 46 по корректировке
 FOOTER_FONT_SIZE = 44  # размер не меняем, меняем только шрифт на ExtraBold
 
 BG_PATHS = {
-    "leaderboard": ASSETS_DIR / "bg-leaderboard.png",
-    "heroes": ASSETS_DIR / "bg-heroes.png",
+    "leaderboard": STATIC_DIR / "bg-leaderboard.png",
+    "heroes": STATIC_DIR / "bg-heroes.png",
 }
 
 EP_LEFT, EP_TOP, EP_SIZE = 1467, 32, 120  # уменьшено с 130 по корректировке
@@ -612,10 +614,10 @@ def _check_layout_collisions(tl: Timeline, show_title: bool) -> None:
 def render_video(
     participants: list,
     mode: str,
-    title: str,
     footer: str,
     episode: str,
     output_path: str,
+    title: str = "",
     sound: bool = True,
     board_center_y: int = 520,  # было 620; -100px по п.3 правок
     show_title: bool = True,
@@ -643,57 +645,39 @@ def render_video(
 
     video_only_path = str(output_path) + ".video_only.mp4"
     audio_path = str(output_path) + ".audio.wav"
-    passlog_path = str(output_path) + ".ffmpeg2pass"
 
-    # П.6: максимальное качество — 2-pass libx264 VBR при высоком целевом битрейте.
-    # Контент простой (статичный фон + текст/бары), но 2 прохода всё равно дают
-    # более стабильное распределение бит, чем однопроходный CRF, плюс высокий
-    # битрейт сам по себе исключает видимые артефакты сжатия.
-    # Так как кадры идут через pipe в stdin (не перемотать), для 2 проходов
-    # генерируем кадры дважды — дороже по времени рендера PIL, но не по диску.
-    TARGET_BITRATE = "12M"
-    MAXRATE = "16M"
-    BUFSIZE = "24M"
+    enc = get_encoder_config(shutil.which("ffmpeg") or "ffmpeg")
+    encode_flags = enc["ffmpeg_flags"]
 
     def _generate_frames(proc: subprocess.Popen):
-        for frame_idx in range(n_frames):
-            t = frame_idx / FPS
-            img = renderer.render_frame(tl, t)
-            arr = np.asarray(img, dtype=np.uint8)
-            proc.stdin.write(arr.tobytes())
-        proc.stdin.close()
-        proc.wait()
+        try:
+            for frame_idx in range(n_frames):
+                t = frame_idx / FPS
+                img = renderer.render_frame(tl, t)
+                arr = np.asarray(img, dtype=np.uint8)
+                proc.stdin.write(arr.tobytes())
+        except BrokenPipeError:
+            pass
+        finally:
+            proc.stdin.close()
+            proc.wait()
+        if proc.returncode != 0:
+            raise RuntimeError(
+                f"ffmpeg завершился с кодом {proc.returncode} при кодировании видео "
+                f"(см. вывод ffmpeg выше)"
+            )
 
-    null_device = "NUL" if sys.platform.startswith("win") else "/dev/null"
-    pass1_cmd = [
+    video_cmd = [
         "ffmpeg", "-y",
         "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{W}x{H}", "-r", str(FPS),
         "-i", "-",
         "-an",
-        "-c:v", "libx264", "-preset", "veryslow",
-        "-b:v", TARGET_BITRATE, "-maxrate", MAXRATE, "-bufsize", BUFSIZE,
-        "-pix_fmt", "yuv420p",
-        "-pass", "1", "-passlogfile", passlog_path,
-        "-f", "mp4",
-        null_device,
-    ]
-    proc1 = subprocess.Popen(pass1_cmd, stdin=subprocess.PIPE)
-    _generate_frames(proc1)
-
-    pass2_cmd = [
-        "ffmpeg", "-y",
-        "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{W}x{H}", "-r", str(FPS),
-        "-i", "-",
-        "-an",
-        "-c:v", "libx264", "-preset", "veryslow",
-        "-b:v", TARGET_BITRATE, "-maxrate", MAXRATE, "-bufsize", BUFSIZE,
-        "-pix_fmt", "yuv420p",
-        "-pass", "2", "-passlogfile", passlog_path,
+        *encode_flags,
         "-movflags", "+faststart",
         video_only_path,
     ]
-    proc2 = subprocess.Popen(pass2_cmd, stdin=subprocess.PIPE)
-    _generate_frames(proc2)
+    proc = subprocess.Popen(video_cmd, stdin=subprocess.PIPE)
+    _generate_frames(proc)
 
     try:
         if sound:
@@ -723,9 +707,7 @@ def render_video(
             ]
             subprocess.run(mux_cmd, check=True)
     finally:
-        # Чистим промежуточные файлы независимо от исхода муксинга
-        cleanup_paths = [video_only_path, audio_path,
-                          passlog_path + "-0.log", passlog_path + "-0.log.mbtree"]
+        cleanup_paths = [video_only_path, audio_path]
         for p in cleanup_paths:
             try:
                 Path(p).unlink(missing_ok=True)
