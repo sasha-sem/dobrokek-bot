@@ -625,7 +625,13 @@ def render_video(
     bar_cap_other_ranks: int = BAR_CAP_OTHER_RANKS,  # П.3: настраиваемые пороги отображения баров
     bar_cap_rank1: int = BAR_CAP_RANK1,
     sound_gain: float = 1.0,  # П.6: глобальный множитель громкости звука
+    background_music_path: str | None = None,
+    background_music_gain: float = 0.2,
 ):
+    ffmpeg_bin = shutil.which("ffmpeg") or "ffmpeg"
+    if sound and background_music_path is not None:
+        _validate_background_music(background_music_path, ffmpeg_bin)
+
     sorted_p = sorted(participants, key=lambda p: -p.count)
     tl = build_timeline(sorted_p, board_center_y)
     hold = end_hold if end_hold is not None else RECORD_END_HOLD_DEFAULT
@@ -646,7 +652,7 @@ def render_video(
     video_only_path = str(output_path) + ".video_only.mp4"
     audio_path = str(output_path) + ".audio.wav"
 
-    enc = get_encoder_config(shutil.which("ffmpeg") or "ffmpeg")
+    enc = get_encoder_config(ffmpeg_bin)
     encode_flags = enc["ffmpeg_flags"]
 
     def _generate_frames(proc: subprocess.Popen):
@@ -668,7 +674,7 @@ def render_video(
             )
 
     video_cmd = [
-        "ffmpeg", "-y",
+        ffmpeg_bin, "-y",
         "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{W}x{H}", "-r", str(FPS),
         "-i", "-",
         "-an",
@@ -684,20 +690,39 @@ def render_video(
             audio = build_audio_track(total_duration, tl.tick_times, tl.ding_at, gain_multiplier=sound_gain)
             _write_wav(audio_path, audio)
 
-            mux_cmd = [
-                "ffmpeg", "-y",
-                "-i", video_only_path,
-                "-i", audio_path,
-                "-c:v", "copy",
-                "-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-ac", "2",
-                "-shortest",
-                str(output_path),
-            ]
+            if background_music_path is not None:
+                mux_cmd = [
+                    ffmpeg_bin, "-y",
+                    "-i", video_only_path,
+                    "-i", audio_path,
+                    "-stream_loop", "-1", "-i", str(background_music_path),
+                    "-filter_complex",
+                    (
+                        f"[2:a]volume={background_music_gain}[music];"
+                        "[1:a][music]amix=inputs=2:duration=first:dropout_transition=0:normalize=0,"
+                        "alimiter=limit=0.98:level=0:latency=1[aout]"
+                    ),
+                    "-map", "0:v:0", "-map", "[aout]",
+                    "-c:v", "copy",
+                    "-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-ac", "2",
+                    "-shortest",
+                    str(output_path),
+                ]
+            else:
+                mux_cmd = [
+                    ffmpeg_bin, "-y",
+                    "-i", video_only_path,
+                    "-i", audio_path,
+                    "-c:v", "copy",
+                    "-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-ac", "2",
+                    "-shortest",
+                    str(output_path),
+                ]
             subprocess.run(mux_cmd, check=True)
         else:
             # ещё нужно добавить тихую AAC дорожку для совместимости с concat в build_video.py
             mux_cmd = [
-                "ffmpeg", "-y",
+                ffmpeg_bin, "-y",
                 "-i", video_only_path,
                 "-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=48000",
                 "-c:v", "copy",
@@ -715,6 +740,26 @@ def render_video(
                 pass
 
     return output_path
+
+
+def _validate_background_music(path: str, ffmpeg_bin: str) -> None:
+    """Проверяет наличие и декодируемость аудиотрека до дорогого рендера кадров."""
+    music_path = Path(path)
+    if not music_path.is_file():
+        raise FileNotFoundError(f"Фоновая музыка не найдена: {music_path}")
+
+    probe = subprocess.run(
+        [
+            ffmpeg_bin, "-v", "error", "-i", str(music_path),
+            "-map", "0:a:0", "-t", "0.1", "-f", "null", "-",
+        ],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    if probe.returncode != 0:
+        details = probe.stderr.strip() or "FFmpeg не смог прочитать аудиодорожку"
+        raise ValueError(f"Некорректный файл фоновой музыки {music_path}: {details}")
 
 
 def _write_wav(path: str, audio: np.ndarray):

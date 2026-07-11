@@ -4,10 +4,10 @@
 .vscode
 __pycache__
 downloads
+/data/
 export
 result
 static
-CLAUDE.md
 temp_clips
 *TEMP*
 assets

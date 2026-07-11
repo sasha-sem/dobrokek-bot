@@ -2,9 +2,15 @@ from pytubefix import YouTube
 from sources.source import Source
 import re
 from datetime import datetime
-import requests
+import os
+from pathlib import Path
 
 YOUTUBE_SHORTS_PATTERN = r"https?://(?:www\.)?(?:youtube\.com/shorts/|youtu\.be/)[A-Za-z0-9_-]+"
+DEFAULT_YOUTUBE_TOKEN_FILE = "data/youtube_oauth.json"
+
+
+class YouTubeAuthenticationRequired(RuntimeError):
+    pass
 
 
 class ShortsSource(Source):
@@ -16,7 +22,19 @@ class ShortsSource(Source):
         return f"shorts_{timestamp}.mp4"
     
     def download(self, url: str, download_path: str) -> str:
-        video = YouTube(url)
+        token_file = os.environ.get("YOUTUBE_TOKEN_FILE", DEFAULT_YOUTUBE_TOKEN_FILE)
+        if not Path(token_file).is_file():
+            raise YouTubeAuthenticationRequired(
+                f"YouTube OAuth token not found at {token_file}. "
+                "Run `make youtube-auth` before downloading YouTube videos."
+            )
+
+        video = YouTube(
+            url,
+            use_oauth=True,
+            allow_oauth_cache=True,
+            token_file=token_file,
+        )
         stream = video.streams.filter(
             progressive=True,
             file_extension='mp4'

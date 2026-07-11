@@ -41,6 +41,10 @@ from pathlib import Path
 
 from leaderboard_render import render_video, Participant, BAR_CAP_OTHER_RANKS, BAR_CAP_RANK1
 
+BASE_DIR = Path(__file__).parent
+OUTRO_MUSIC = str(BASE_DIR / "static/outro.mp3")
+MEME_HEROES_MUSIC = str(BASE_DIR / "static/meme_pause.mp3")
+BACKGROUND_MUSIC_GAIN = 0.2
 HEROES_END_HOLD = 5.0  # п.5: heroes заканчивается через 5с после footer/динь, а не через 9.5с
 
 
@@ -62,6 +66,7 @@ def _render_one(mode: str, title: str, footer: str, episode: str, participants: 
     чтобы логика каждого режима оставалась идентичной независимому запуску."""
     show_title = mode == "leaderboard"
     end_hold = HEROES_END_HOLD if mode == "heroes" else None
+    background_music_path = OUTRO_MUSIC if mode == "leaderboard" else MEME_HEROES_MUSIC
 
     print(f"Режим: {mode}, выпуск #{episode or '—'}, участников: {len(participants)}")
     for p in participants:
@@ -81,6 +86,8 @@ def _render_one(mode: str, title: str, footer: str, episode: str, participants: 
         bar_cap_other_ranks=args.bar_cap_others,
         bar_cap_rank1=args.bar_cap_rank1,
         sound_gain=args.sound_gain,
+        background_music_path=background_music_path,
+        background_music_gain=BACKGROUND_MUSIC_GAIN,
     )
     print(f"Готово: {out}")
     return out
@@ -116,7 +123,7 @@ def main():
         help="Путь к выходному mp4 (--mode leaderboard/heroes), "
              "либо к выходной директории (--mode both, туда кладутся outro.mp4 и meme_heroes.mp4)",
     )
-    parser.add_argument("--no-sound", action="store_true", help="Отключить звук (тики/динь)")
+    parser.add_argument("--no-sound", action="store_true", help="Полностью отключить звук (музыку, тики и динь)")
     parser.add_argument(
         "--board-center-y", type=int, default=520,
         help="Вертикальный центр блока рядов на канвасе (по умолчанию 520; сдвинуто на -100px согласно п.3 правок)",

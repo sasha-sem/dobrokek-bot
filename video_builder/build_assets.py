@@ -27,6 +27,7 @@ W, H = 1920, 1080
 TITLE_FONT_PATH = str(BASE_DIR / "static/Roboto-Bold.ttf")
 NUMBER_FONT_PATH = str(BASE_DIR / "static/BulbasaurSP.otf")
 INTRO_MUSIC = str(BASE_DIR / "static/intro.mp3")
+OUTRO_MUSIC = str(BASE_DIR / "static/outro.mp3")
 INTRO_BG_PATH = BASE_DIR / "export/intro_bg.mp4"
 INTRO_LOGO_PATH = BASE_DIR / "static/intro_text.mov"
 MEME_PAUSE_DURATION = 10.0
@@ -35,6 +36,7 @@ BPM = 150
 BEAT = 60 / BPM
 INPUT_FILE = BASE_DIR / "export/result.json"
 MEME_PAUSE_MUSIC = str(BASE_DIR / "static/meme_pause.mp3")
+BACKGROUND_MUSIC_GAIN = 0.2
 EPISODE: int = 1  # overridden by --episode arg in main()
 
 HEROES_END_HOLD = 5.0
@@ -331,6 +333,8 @@ def main():
             footer=LEADERBOARD_FOOTER,
             episode=str(args.episode),
             output_path=str(ASSETS_DIR / "outro.mp4"),
+            background_music_path=OUTRO_MUSIC,
+            background_music_gain=BACKGROUND_MUSIC_GAIN,
         )
 
     if selected["meme_pause"]:
@@ -349,6 +353,8 @@ def main():
             episode=str(args.episode),
             output_path=str(ASSETS_DIR / "meme_heroes.mp4"),
             end_hold=HEROES_END_HOLD,
+            background_music_path=MEME_PAUSE_MUSIC,
+            background_music_gain=BACKGROUND_MUSIC_GAIN,
         )
 
     print("Готово! Ассеты (" + ", ".join(k for k, v in selected.items() if v) + ") сохранены в папку assets/")
