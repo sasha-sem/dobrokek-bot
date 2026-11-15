@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
+import argparse
 import json
 import os
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 # --- НАСТРОЙКИ ОКРУЖЕНИЯ ---
@@ -16,6 +18,7 @@ os.environ["FFMPEG_BINARY"] = shutil.which("ffmpeg") or "/usr/local/bin/ffmpeg"
 # ---------------------------
 
 from hw_encoder import get_encoder_config  # noqa: E402
+from audio_normalization import normalization_filter  # noqa: E402
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 BASE_DIR = Path(__file__).parent
@@ -42,12 +45,13 @@ def _ffprobe(ffprobe_bin: str, path: str, stream: str, entries: str) -> list[str
     return res.stdout.split()
 
 
-def prepare_ts(ffmpeg_bin: str, ffprobe_bin: str, src: str, ts_path: Path, enc: dict) -> None:
+def prepare_ts(ffmpeg_bin: str, ffprobe_bin: str, src: str, ts_path: Path, enc: dict,
+               normalize_audio: bool = True) -> None:
     """Ремуксит сегмент в MPEG-TS для чистой склейки.
 
-    Видео/аудио, уже совпадающие с каноном (h264 1920x1080 / aac 48к стерео),
-    копируются без потерь. Несоответствующие (кастомные ассеты) приводятся
-    к канону перекодированием, а отсутствующая аудиодорожка заменяется тишиной.
+    Видео канонического формата копируется без потерь. Громкость аудио
+    выравнивается по сегментам; без коррекции канонический AAC копируется.
+    Кастомные ассеты приводятся к канону, отсутствующий звук заменяется тишиной.
     """
     v = _ffprobe(ffprobe_bin, src, "v:0", "codec_name,width,height")
     a = _ffprobe(ffprobe_bin, src, "a:0", "codec_name,sample_rate,channels")
@@ -55,6 +59,7 @@ def prepare_ts(ffmpeg_bin: str, ffprobe_bin: str, src: str, ts_path: Path, enc: 
     video_ok = len(v) == 3 and v[0] == "h264" and v[1] == str(W) and v[2] == str(H)
     has_audio = len(a) >= 1
     audio_ok = len(a) == 3 and a[0] == "aac" and a[1] == "48000" and a[2] == "2"
+    audio_filter = normalization_filter(ffmpeg_bin, src) if has_audio and normalize_audio else None
 
     cmd = [ffmpeg_bin, "-y", "-loglevel", "error", "-i", src]
     if not has_audio:
@@ -73,10 +78,13 @@ def prepare_ts(ffmpeg_bin: str, ffprobe_bin: str, src: str, ts_path: Path, enc: 
     # аудио
     if has_audio:
         cmd += ["-map", "0:a:0"]
-        if audio_ok:
+        if audio_ok and audio_filter is None:
             cmd += ["-c:a", "copy"]
         else:
-            print(f"   [normalize] {Path(src).name}: аудио не канон ({'/'.join(a)}) -> перекодируем")
+            if audio_filter:
+                cmd += ["-af", audio_filter]
+            else:
+                print(f"   [normalize] {Path(src).name}: аудио не канон ({'/'.join(a)}) -> перекодируем")
             cmd += ["-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-ac", "2"]
     else:
         print(f"   [normalize] {Path(src).name}: нет аудио -> добавляем тишину")
@@ -90,13 +98,34 @@ def prepare_ts(ffmpeg_bin: str, ffprobe_bin: str, src: str, ts_path: Path, enc: 
 
 
 def main() -> None:
-    if not MANIFEST_PATH.exists():
+    parser = argparse.ArgumentParser(description="Склейка видео с выравниванием громкости клипов.")
+    parser.add_argument("--no-normalize-audio", action="store_true",
+                        help="Отключить выравнивание громкости (прежнее поведение).")
+    args = parser.parse_args()
+    OUTPUT_FILE.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix=".episode-", dir=OUTPUT_FILE.parent) as stage:
+        partial = Path(stage) / OUTPUT_FILE.name
+        assemble_video(MANIFEST_PATH, partial, TEMP_DIR, CONCAT_LIST_PATH,
+                       assets_dir=ASSETS_DIR, normalize_audio=not args.no_normalize_audio)
+        partial.replace(OUTPUT_FILE)
+    print(f"Готовый выпуск: {OUTPUT_FILE}")
+
+
+def available_asset(assets_dir: Path | None, name: str) -> Path | None:
+    if assets_dir is None:
+        return None
+    path = assets_dir / name
+    return path if path.is_file() and path.stat().st_size > 1 else None
+
+
+def assemble_video(manifest_path, output_file, temp_dir, concat_list_path, *, assets_dir=None, normalize_audio=True):
+    if not manifest_path.exists():
         sys.exit("Ошибка: temp_clips/manifest.json не найден. Сначала запустите build_clips.py!")
 
-    with open(MANIFEST_PATH, encoding="utf-8") as f:
+    with open(manifest_path, encoding="utf-8") as f:
         manifest = json.load(f)
 
-    OUTPUT_FILE.parent.mkdir(exist_ok=True)
+    output_file.parent.mkdir(exist_ok=True)
 
     # Разделяем клипы по ролям (порядок внутри ролей сохраняем как в манифесте)
     before_memes: list[str] = []
@@ -119,40 +148,40 @@ def main() -> None:
 
     # Секция мемов: заставка -> мемы -> статистика «Герои мемной паузы»
     meme_section: list[str] = []
-    meme_pause_path = ASSETS_DIR / "meme_pause.mp4"
-    meme_heroes_path = ASSETS_DIR / "meme_heroes.mp4"
+    meme_pause_path = available_asset(assets_dir, "meme_pause.mp4")
+    meme_heroes_path = available_asset(assets_dir, "meme_heroes.mp4")
     if meme_clips_list:
-        if meme_pause_path.exists():
+        if meme_pause_path:
             meme_section.append(str(meme_pause_path))
-            meme_section += meme_clips_list
-            if meme_heroes_path.exists():
-                meme_section.append(str(meme_heroes_path))
-            else:
-                print("ВНИМАНИЕ: assets/meme_heroes.mp4 не найдено. Используем заставку МЕМНОЙ ПАУЗЫ в конце. Запустите build_assets.py!")
-                meme_section.append(str(meme_pause_path))
-            print(f"-> Добавляем МЕМНУЮ ПАУЗУ ({len(meme_clips_list)} мемов)...")
-        else:
-            print("ВНИМАНИЕ: assets/meme_pause.mp4 не найдено. Мемная пауза пропущена. Запустите build_assets.py!")
+        elif assets_dir:
+            print("ВНИМАНИЕ: assets/meme_pause.mp4 не найдено. Добавляем мемы без заставки.")
+        meme_section += meme_clips_list
+        if meme_heroes_path:
+            meme_section.append(str(meme_heroes_path))
+        elif meme_pause_path:
+            print("ВНИМАНИЕ: assets/meme_heroes.mp4 не найдено. Используем заставку МЕМНОЙ ПАУЗЫ в конце. Запустите build_assets.py!")
+            meme_section.append(str(meme_pause_path))
+        print(f"-> Добавляем МЕМНУЮ ПАУЗУ ({len(meme_clips_list)} мемов)...")
 
     # Финальный порядок: intro -> до мемов -> [мемная пауза] -> после мемов -> outro
     ordered: list[str] = []
 
-    intro_path = ASSETS_DIR / "intro.mp4"
-    if intro_path.exists():
+    intro_path = available_asset(assets_dir, "intro.mp4")
+    if intro_path:
         print("-> Добавляем пререндер INTRO...")
         ordered.append(str(intro_path))
-    else:
+    elif assets_dir:
         print("ВНИМАНИЕ: assets/intro.mp4 не найдено. Сначала запустите build_assets.py!")
 
     ordered += before_memes
     ordered += meme_section
     ordered += after_memes
 
-    outro_path = ASSETS_DIR / "outro.mp4"
-    if outro_path.exists():
+    outro_path = available_asset(assets_dir, "outro.mp4")
+    if outro_path:
         print("-> Добавляем пререндер OUTRO...")
         ordered.append(str(outro_path))
-    else:
+    elif assets_dir:
         print("ВНИМАНИЕ: assets/outro.mp4 не найдено. Сначала запустите build_assets.py!")
 
     if not ordered:
@@ -169,7 +198,7 @@ def main() -> None:
     # копируются без перекодирования; кастомные ассеты нормализуются (см. prepare_ts).
     print(f"-> Склеиваем финальное видео ({len(ordered)} сегментов)...")
 
-    TS_DIR = TEMP_DIR / "ts"
+    TS_DIR = temp_dir / "ts"
     if TS_DIR.exists():
         shutil.rmtree(TS_DIR)
     TS_DIR.mkdir(parents=True, exist_ok=True)
@@ -178,8 +207,9 @@ def main() -> None:
     for i, p in enumerate(ordered):
         ts_path = TS_DIR / f"seg_{i:04d}.ts"
         try:
-            prepare_ts(ffmpeg_bin, ffprobe_bin, str(Path(p).resolve()), ts_path, enc)
-        except subprocess.CalledProcessError as e:
+            prepare_ts(ffmpeg_bin, ffprobe_bin, str(Path(p).resolve()), ts_path, enc,
+                       normalize_audio=normalize_audio)
+        except (subprocess.CalledProcessError, RuntimeError) as e:
             sys.exit(f"Ошибка FFMPEG при подготовке сегмента {p} к склейке: {e}")
         ts_paths.append(str(ts_path))
 
@@ -188,19 +218,19 @@ def main() -> None:
     for p in ts_paths:
         abs_p = str(Path(p).resolve()).replace("'", "'\\''")
         lines.append(f"file '{abs_p}'")
-    CONCAT_LIST_PATH.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    concat_list_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
     # Видео копируем без перекодирования (lossless — ради чего всё и затевалось).
-    # Аудио перекодируем один раз: это выравнивает таймлайн на стыках сегментов
+    # Аудио перекодируем после коррекции сегментов: это выравнивает таймлайн на стыках
     # (иначе по границам AAC-кадров остаются non-monotonic DTS).
     cmd = [
         ffmpeg_bin, "-y",
         "-f", "concat", "-safe", "0",
-        "-i", str(CONCAT_LIST_PATH),
+        "-i", str(concat_list_path),
         "-c:v", "copy",
         "-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-ac", "2",
         "-movflags", "+faststart",
-        str(OUTPUT_FILE),
+        str(output_file),
     ]
 
     try:
@@ -209,7 +239,7 @@ def main() -> None:
         sys.exit(f"Ошибка FFMPEG при финальной склейке: {e}")
 
     shutil.rmtree(TS_DIR, ignore_errors=True)
-    print(f"Готово! Финальное видео: {OUTPUT_FILE}")
+    print(f"Готово! Финальное видео: {output_file}")
 
 
 if __name__ == "__main__":
