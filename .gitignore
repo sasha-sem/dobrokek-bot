@@ -14,3 +14,4 @@ assets
 .idea
 video_builder/.tools/
 video_builder/narrations/
+video_builder/voiceover_demo/

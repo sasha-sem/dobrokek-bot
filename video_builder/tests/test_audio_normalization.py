@@ -136,8 +136,7 @@ class FFmpegTests(unittest.TestCase):
         for disabled in (False, True):
             output = self.root / f"result-{disabled}" / "output.mp4"
             with patch.multiple(build_video, MANIFEST_PATH=manifest, OUTPUT_FILE=output,
-                                TEMP_DIR=self.root, ASSETS_DIR=self.root / "no-assets",
-                                CONCAT_LIST_PATH=self.root / "concat.txt"), \
+                                ASSETS_DIR=self.root / "no-assets"), \
                  patch.object(build_video, "get_encoder_config", return_value=self.enc), \
                  patch.dict(os.environ, {"FFMPEG_BINARY": FFMPEG}), \
                  patch("sys.argv", ["build_video.py"] + (["--no-normalize-audio"] if disabled else [])), \
@@ -145,7 +144,7 @@ class FFmpegTests(unittest.TestCase):
                 build_video.main()
             expected = measure_loudness(FFMPEG, str(self.base))[0] if disabled else -16
             self.assertAlmostEqual(measure_loudness(FFMPEG, str(output))[0], expected, delta=0.3)
-            self.assertFalse((self.root / "ts").exists())
+            self.assertEqual(list(self.root.glob(".concat-*")), [])
             duration = float(subprocess.check_output(
                 ["ffprobe", "-v", "error", "-show_entries", "format=duration",
                  "-of", "csv=p=0", str(output)], text=True))

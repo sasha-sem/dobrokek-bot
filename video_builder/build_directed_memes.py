@@ -18,15 +18,20 @@ from urllib.parse import urlsplit
 
 import numpy as np
 
-from build_clips import VIDEO_FONT_PATH, process_meme_image
 from build_video import assemble_video
+from clip_encoding import process_meme_image
+from hw_encoder import ffmpeg_binary
 from meme_direction import NUMBER_PLAN_VERSION, PLAN_VERSION, make_direction
 from meme_narration import BASE_DIR, SCRIPTS_PATH, NarrationLibrary, save_json
 from meme_number_speech import latin_number_line, number_spans
 from meme_prosody import apply_direction, write_wav
 from meme_speech import CHANNELS, SAMPLE_RATE, SAMPLE_WIDTH, silence, speech
 from meme_vision import LMStudioVision
+from telegram_export import is_photo, media_messages
 from voicestudio_speech import DEFAULT_VOICESTUDIO_RATE, VoiceStudio, speech_speed
+
+
+DEFAULT_CONFIG = BASE_DIR / "narrations/directed-memes.json"
 
 
 def read_json(path):
@@ -46,11 +51,10 @@ def local_tool(name):
 
 def load_photos(export):
     photos = []
-    for msg in read_json(export / "result.json")["messages"]:
-        entities = msg.get("text_entities", [])
-        if not msg.get("photo") or any(item.get("type") == "hashtag" and item.get("text") == "#dobrokek"
-                                       for item in entities):
+    for msg in media_messages(export / "result.json"):
+        if not is_photo(msg):
             continue
+        entities = msg.get("text_entities", [])
         senders = [right["text"].strip() for left, right in zip(entities, entities[1:])
                    if left.get("type") == "plain" and left["text"].rstrip().endswith("👤")
                    and right.get("type") == "code"]
@@ -118,6 +122,7 @@ def whisper_settings(config, ffmpeg):
 
 @contextmanager
 def lock_work(path):
+    path.mkdir(parents=True, exist_ok=True)
     with (path / ".lock").open("a") as lock:
         try:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -174,36 +179,39 @@ def duration(path):
 
 
 def render_clip(folder, photo, author, entry, plan, profile, signature, model, studio, rate, settings, ffmpeg):
-    audio = None
-    direction = {}
-    if plan:
-        raw = folder / "dry.wav"
-        audio = folder / "narration.wav"
-        pcm, times = asyncio.run(synthesize(plan, profile, rate, ffmpeg, studio, photo))
-        write_wav(raw, pcm)
-        windows, applied = apply_direction(plan, times, raw, audio, model, settings, ffmpeg)
-        direction = {**plan, "windows": windows, "applied": applied, "line_times": times, "voice": profile}
     output = folder / "clip.mp4"
-    part = folder / "clip.partial.mp4"
-    process_meme_image(str(photo), str(part), author, VIDEO_FONT_PATH, narration_path=audio)
-    seconds = duration(part)
-    part.replace(output)
+    direction = {}
+    with tempfile.TemporaryDirectory(prefix=".render-", dir=folder) as stage:
+        audio = None
+        if plan:
+            raw = Path(stage) / "dry.wav"
+            audio = Path(stage) / "narration.wav"
+            pcm, times = asyncio.run(synthesize(plan, profile, rate, ffmpeg, studio, photo))
+            write_wav(raw, pcm)
+            windows, applied = apply_direction(plan, times, raw, audio, model, settings, ffmpeg)
+            direction = {**plan, "windows": windows, "applied": applied, "line_times": times, "voice": profile}
+        part = Path(stage) / "clip.mp4"
+        process_meme_image(str(photo), str(part), author, narration_path=audio)
+        seconds = duration(part)
+        part.replace(output)
     result = {"signature": signature, "path": str(output), "source": str(photo), "title": author,
               "duration": seconds, "role": "meme", "status": entry["status"], "direction": direction}
     save_json(folder / "clip.json", result)
     return result
 
 
-def build(args):
-    photos = load_photos(args.export)
-    manifest = args.work_dir / "manifest.json"
+def prepare_clips(export: Path, config_path: Path, scripts: Path, work_dir: Path,
+                  *, allow_empty: bool = True) -> dict:
+    photos = load_photos(export)
+    manifest = work_dir / "manifest.json"
     if not photos:
-        if args.clips_only:
-            save_json(manifest, {"clips": [], "voiced": 0, "with_emphasis": 0})
-            print("В экспорте нет фото-мемов.", flush=True)
-            return
-        raise ValueError(f"В {args.export / 'result.json'} нет фото-мемов.")
-    config = read_json(args.config)
+        if not allow_empty:
+            raise ValueError(f"В {export / 'result.json'} нет фото-мемов.")
+        result = {"clips": [], "voiced": 0, "with_emphasis": 0}
+        save_json(manifest, result)
+        print("В экспорте нет фото-мемов.", flush=True)
+        return result
+    config = read_json(config_path)
     voices = {name.strip().casefold(): profile for name, profile in config["author_voices"].items()}
     rate = config.get("rate", DEFAULT_VOICESTUDIO_RATE)
     speech_speed(rate)
@@ -212,15 +220,15 @@ def build(args):
         raise ValueError("Добавьте профили в author_voices для: " + ", ".join(sorted(missing)))
     model = start_model(config["lm_studio"])
     studio = start_voice(config, tuple(sorted({voices[author.casefold()] for _, author in photos})))
-    ffmpeg = os.environ["FFMPEG_BINARY"]
+    ffmpeg = ffmpeg_binary()
     settings = whisper_settings(config, ffmpeg)
-    library = NarrationLibrary(args.scripts, args.export)
+    library = NarrationLibrary(scripts, export)
     clips = []
     pending = deque()
     with ThreadPoolExecutor(max_workers=2) as encoder:
         for index, (photo, author) in enumerate(photos, 1):
             prefix = f"[{index}/{len(photos)}] {author}"
-            folder = args.work_dir / f"{index:04d}"
+            folder = work_dir / f"{index:04d}"
             folder.mkdir(exist_ok=True)
             entry = narration_entry(library, photo)
             profile = voices[author.casefold()]
@@ -260,29 +268,34 @@ def build(args):
         clips = [item if isinstance(item, dict) else item.result() for item in clips]
     voiced = [clip for clip in clips if clip["direction"]]
     applied = sum(clip["direction"]["applied"] > 0 for clip in voiced)
-    save_json(manifest, {"clips": clips, "llm": model.model, "voiced": len(voiced), "with_emphasis": applied})
+    result = {"clips": clips, "llm": model.model, "voiced": len(voiced), "with_emphasis": applied}
+    save_json(manifest, result)
     for clip in voiced:
         if not clip["direction"]["applied"]:
             print(f"Не удалось привязать интонацию к слову: {clip['source']}", flush=True)
-    if args.clips_only:
-        print(f"Клипы мемов готовы: {manifest}", flush=True)
-        return
-    args.output.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(prefix=".meme-video-", dir=args.output.parent) as stage:
+    return result
+
+
+def assemble_memes(manifest: Path, output: Path, result: dict) -> None:
+    clips = result["clips"]
+    voiced = result["voiced"]
+    applied = result["with_emphasis"]
+    output.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix=".meme-video-", dir=output.parent) as stage:
         partial = Path(stage) / "output.mp4"
-        assemble_video(manifest, partial, args.work_dir, args.work_dir / "concat.txt")
+        assemble_video(manifest, partial)
         seconds = duration(partial)
         if abs(seconds - sum(item["duration"] for item in clips)) > max(2, len(clips) * .08):
             raise ValueError("Длина готового ролика не совпадает с общей длиной клипов.")
-        partial.replace(args.output)
-    print(f"{args.output} · {seconds:.2f} с · озвучено {len(voiced)}/{len(clips)}, "
-          f"интонация применена в {applied}/{len(voiced)}", flush=True)
+        partial.replace(output)
+    print(f"{output} · {seconds:.2f} с · озвучено {voiced}/{len(clips)}, "
+          f"интонация применена в {applied}/{voiced}", flush=True)
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--export", type=Path, default=BASE_DIR / "export")
-    parser.add_argument("--config", type=Path, default=BASE_DIR / "narrations/directed-memes.json")
+    parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
     parser.add_argument("--scripts", type=Path,
                         help="Кэш распознавания; для другого экспорта по умолчанию лежит в work-dir.")
     parser.add_argument("--work-dir", type=Path, default=BASE_DIR / "temp_clips/directed-memes")
@@ -295,9 +308,13 @@ def main():
     if args.scripts is None:
         args.scripts = SCRIPTS_PATH if args.export == BASE_DIR / "export" else args.work_dir / "scripts.json"
     try:
-        args.work_dir.mkdir(parents=True, exist_ok=True)
+        manifest = args.work_dir / "manifest.json"
         with lock_work(args.work_dir):
-            build(args)
+            result = prepare_clips(args.export, args.config, args.scripts, args.work_dir, allow_empty=args.clips_only)
+            if args.clips_only:
+                print(f"Клипы мемов готовы: {manifest}", flush=True)
+            else:
+                assemble_memes(manifest, args.output, result)
     except (OSError, RuntimeError, ValueError, KeyError, subprocess.SubprocessError) as error:
         print(f"Сборка остановилась: {error}", file=sys.stderr)
         details = getattr(error, "stderr", None)

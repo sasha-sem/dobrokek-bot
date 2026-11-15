@@ -11,14 +11,14 @@ from __future__ import annotations
 
 import subprocess
 import sys
-import shutil
+import tempfile
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 from dataclasses import dataclass
 from pathlib import Path
 
 from audio_gen import build_audio_track, SR
-from hw_encoder import get_encoder_config
+from hw_encoder import ffmpeg_binary, get_encoder_config
 
 # ============================================================
 # КОНСТАНТЫ (1:1 с оригинальным JS)
@@ -94,7 +94,6 @@ FOOTER_PADDING_BOTTOM = 148
 
 STATIC_DIR = Path(__file__).parent / "static"
 FONT_ONEST = str(STATIC_DIR / "Onest-SemiBold.ttf")
-FONT_ONEST_REGULAR = str(STATIC_DIR / "Onest-Regular.ttf")
 FONT_ONEST_EXTRABOLD = str(STATIC_DIR / "Onest-ExtraBold.ttf")
 FONT_EPISODE = str(STATIC_DIR / "Ck_Blockhead.ttf")
 
@@ -120,10 +119,6 @@ def ease_out_cubic_bezier_22_7_2_1(t: float) -> float:
     return 1 - (1 - t) ** 2.2
 
 
-def ease_linear_css(t: float) -> float:
-    return max(0.0, min(1.0, t))
-
-
 # ============================================================
 # ДАННЫЕ
 # ============================================================
@@ -143,8 +138,6 @@ class RowPlan:
     font_size: int
     show_start: float  # когда ряд начинает появляться (label fade-in + bars start)
     bar_grow_starts: list  # время начала роста каждого бара (абсолютное, в секундах)
-    count_start: float
-    count_dur: float
     y: int  # вертикальная позиция ряда на канвасе (top)
 
 
@@ -199,13 +192,11 @@ def build_timeline(participants: list, board_center_y: int) -> Timeline:
         bar_starts = [show_start + b * effective_stagger for b in range(p.count)]
         tick_times.extend(bar_starts)
 
-        count_dur = (p.count - 1) * effective_stagger + T_BAR_GROW if p.count > 0 else 0.0
-        count_start = show_start
 
         row_plans.append(RowPlan(
             rank=rank, name=p.name, count=p.count, color=color, font_size=font_size,
             show_start=show_start, bar_grow_starts=bar_starts,
-            count_start=count_start, count_dur=count_dur, y=y,
+            y=y,
         ))
 
         t += T_NAME_IN + (p.count * effective_stagger + T_BAR_GROW) + T_BETWEEN_ROWS
@@ -246,7 +237,6 @@ class Renderer:
             self.bg = self.bg.resize((W, H))
 
         self._font_cache = {}
-        self._glyph_bbox_cache = {}
         self._label_fit_cache = {}
 
     def _font(self, path: str, size: int) -> ImageFont.FreeTypeFont:
@@ -254,20 +244,6 @@ class Renderer:
         if key not in self._font_cache:
             self._font_cache[key] = ImageFont.truetype(path, size)
         return self._font_cache[key]
-
-    def _draw_label_right_aligned(self, draw: ImageDraw.ImageDraw, box_right_x: int, box_center_y: int,
-                                   text: str, color: tuple, font_size: int, opacity: float, y_offset: float):
-        if opacity <= 0:
-            return
-        font = self._font(FONT_ONEST, font_size)
-        bbox = draw.textbbox((0, 0), text, font=font)
-        tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
-        x = box_right_x - tw - bbox[0]
-        y = box_center_y - th / 2 - bbox[1] + y_offset
-        a = max(0, min(255, int(round(opacity * 255))))
-        fill = color + (a,)
-        # Рисуем через отдельный RGBA layer для честной альфы (PIL ImageDraw.text на RGB канвасе не умеет alpha blend)
-        return (x, y, font, fill)
 
     def _fit_label_text(self, draw: ImageDraw.ImageDraw, rank: int, name: str, count: int,
                          base_font_size: int, max_width: int) -> tuple:
@@ -431,27 +407,6 @@ class Renderer:
         # 1 место, дальше до bar_cap_rank1: 3 строки, бар короче, но та же общая зона высоты
         bar_h_small = (RANK1_BARS_ZONE_H - 2 * BAR_ROW_GAP) / 3
         return bars_per_row_normal, bar_h_small, 3
-
-    def _glyph_pixel_bbox(self, text: str, font: ImageFont.FreeTypeFont) -> tuple:
-        """Реальный bbox закрашенных пикселей глифа (не метрики шрифта из textbbox,
-        которые часто включают невидимые отступы дизайнера и не совпадают с видимым
-        контуром символа - именно это давало неточное центрирование "+" ранее).
-        Возвращает (left, top, right, bottom) относительно точки рисования (0,0)."""
-        key = (text, font.path if hasattr(font, "path") else id(font), font.size)
-        if key in self._glyph_bbox_cache:
-            return self._glyph_bbox_cache[key]
-        # Рисуем на достаточно большом холсте с отступом, чтобы не отрезать выносные части
-        pad = font.size * 2
-        probe = Image.new("L", (font.size * 4, font.size * 4), 0)
-        pdraw = ImageDraw.Draw(probe)
-        pdraw.text((pad, pad), text, font=font, fill=255)
-        bbox = probe.getbbox()
-        if bbox is None:
-            bbox = (pad, pad, pad, pad)
-        # переводим обратно в координаты относительно (0,0) точки рисования
-        result = (bbox[0] - pad, bbox[1] - pad, bbox[2] - pad, bbox[3] - pad)
-        self._glyph_bbox_cache[key] = result
-        return result
 
     def _draw_bars(self, draw: ImageDraw.ImageDraw, row: RowPlan, bars_x0: int, t: float):
         cap = self._bar_cap_for_rank(row.rank)
@@ -628,7 +583,7 @@ def render_video(
     background_music_path: str | None = None,
     background_music_gain: float = 0.2,
 ):
-    ffmpeg_bin = shutil.which("ffmpeg") or "ffmpeg"
+    ffmpeg_bin = ffmpeg_binary()
     if sound and background_music_path is not None:
         _validate_background_music(background_music_path, ffmpeg_bin)
 
@@ -649,95 +604,54 @@ def render_video(
         bar_cap_other_ranks=bar_cap_other_ranks, bar_cap_rank1=bar_cap_rank1,
     )
 
-    video_only_path = str(output_path) + ".video_only.mp4"
-    audio_path = str(output_path) + ".audio.wav"
+    flags = get_encoder_config(ffmpeg_bin)["ffmpeg_flags"]
+    target = Path(output_path)
+    with tempfile.TemporaryDirectory(prefix=".leaderboard-", dir=target.parent) as folder:
+        stage = Path(folder)
+        video_only = stage / "frames.mp4"
+        video_cmd = [
+            ffmpeg_bin, "-y",
+            "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{W}x{H}", "-r", str(FPS),
+            "-i", "-", "-an", *flags, str(video_only),
+        ]
+        with subprocess.Popen(video_cmd, stdin=subprocess.PIPE) as proc:
+            try:
+                with proc.stdin as frames:
+                    for index in range(n_frames):
+                        image = renderer.render_frame(tl, index / FPS)
+                        frames.write(np.asarray(image, dtype=np.uint8).tobytes())
+            except BrokenPipeError:
+                pass
+            if proc.wait():
+                raise RuntimeError(f"FFmpeg завершился с кодом {proc.returncode} при кодировании кадров.")
 
-    enc = get_encoder_config(ffmpeg_bin)
-    encode_flags = enc["ffmpeg_flags"]
-
-    def _generate_frames(proc: subprocess.Popen):
-        try:
-            for frame_idx in range(n_frames):
-                t = frame_idx / FPS
-                img = renderer.render_frame(tl, t)
-                arr = np.asarray(img, dtype=np.uint8)
-                proc.stdin.write(arr.tobytes())
-        except BrokenPipeError:
-            pass
-        finally:
-            proc.stdin.close()
-            proc.wait()
-        if proc.returncode != 0:
-            raise RuntimeError(
-                f"ffmpeg завершился с кодом {proc.returncode} при кодировании видео "
-                f"(см. вывод ffmpeg выше)"
-            )
-
-    video_cmd = [
-        ffmpeg_bin, "-y",
-        "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{W}x{H}", "-r", str(FPS),
-        "-i", "-",
-        "-an",
-        *encode_flags,
-        "-movflags", "+faststart",
-        video_only_path,
-    ]
-    proc = subprocess.Popen(video_cmd, stdin=subprocess.PIPE)
-    _generate_frames(proc)
-
-    try:
+        mux_cmd = [ffmpeg_bin, "-y", "-i", str(video_only)]
         if sound:
+            audio_path = stage / "effects.wav"
             audio = build_audio_track(total_duration, tl.tick_times, tl.ding_at, gain_multiplier=sound_gain)
             _write_wav(audio_path, audio)
-
-            if background_music_path is not None:
-                mux_cmd = [
-                    ffmpeg_bin, "-y",
-                    "-i", video_only_path,
-                    "-i", audio_path,
-                    "-stream_loop", "-1", "-i", str(background_music_path),
-                    "-filter_complex",
-                    (
-                        f"[2:a]volume={background_music_gain}[music];"
-                        "[1:a][music]amix=inputs=2:duration=first:dropout_transition=0:normalize=0,"
-                        "alimiter=limit=0.98:level=0:latency=1[aout]"
-                    ),
-                    "-map", "0:v:0", "-map", "[aout]",
-                    "-c:v", "copy",
-                    "-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-ac", "2",
-                    "-shortest",
-                    str(output_path),
-                ]
-            else:
-                mux_cmd = [
-                    ffmpeg_bin, "-y",
-                    "-i", video_only_path,
-                    "-i", audio_path,
-                    "-c:v", "copy",
-                    "-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-ac", "2",
-                    "-shortest",
-                    str(output_path),
-                ]
-            subprocess.run(mux_cmd, check=True)
+            mux_cmd += ["-i", str(audio_path)]
         else:
-            # ещё нужно добавить тихую AAC дорожку для совместимости с concat в build_video.py
-            mux_cmd = [
-                ffmpeg_bin, "-y",
-                "-i", video_only_path,
-                "-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=48000",
-                "-c:v", "copy",
-                "-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-ac", "2",
-                "-shortest",
-                str(output_path),
+            mux_cmd += ["-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=48000"]
+
+        audio_stream = "1:a:0"
+        if sound and background_music_path is not None:
+            mux_cmd += [
+                "-stream_loop", "-1", "-i", str(background_music_path),
+                "-filter_complex",
+                f"[2:a]volume={background_music_gain}[music];"
+                "[1:a][music]amix=inputs=2:duration=first:dropout_transition=0:normalize=0,"
+                "alimiter=limit=0.98:level=0:latency=1[aout]",
             ]
-            subprocess.run(mux_cmd, check=True)
-    finally:
-        cleanup_paths = [video_only_path, audio_path]
-        for p in cleanup_paths:
-            try:
-                Path(p).unlink(missing_ok=True)
-            except OSError:
-                pass
+            audio_stream = "[aout]"
+
+        partial = stage / "output.mp4"
+        subprocess.run([
+            *mux_cmd, "-map", "0:v:0", "-map", audio_stream,
+            "-c:v", "copy", "-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-ac", "2",
+            "-shortest", str(partial),
+        ], check=True)
+        partial.replace(target)
 
     return output_path
 
@@ -762,10 +676,10 @@ def _validate_background_music(path: str, ffmpeg_bin: str) -> None:
         raise ValueError(f"Некорректный файл фоновой музыки {music_path}: {details}")
 
 
-def _write_wav(path: str, audio: np.ndarray):
+def _write_wav(path: Path, audio: np.ndarray):
     import wave
     pcm16 = (audio * 32767).astype(np.int16)
-    with wave.open(path, "wb") as f:
+    with wave.open(str(path), "wb") as f:
         f.setnchannels(2)
         f.setsampwidth(2)
         f.setframerate(SR)

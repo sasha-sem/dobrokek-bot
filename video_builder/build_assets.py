@@ -1,58 +1,47 @@
 #!/usr/bin/env python3
 import argparse
-import os
-import multiprocessing
-from pathlib import Path
-import json
-from collections import defaultdict
-
-# --- НАСТРОЙКИ ОКРУЖЕНИЯ ---
-import shutil
-wsl_native_path = "/usr/lib/wsl/lib"
-if os.path.exists(wsl_native_path):
-    os.environ["LD_LIBRARY_PATH"] = f"{wsl_native_path}:" + os.environ.get("LD_LIBRARY_PATH", "")
-os.environ["FFMPEG_BINARY"] = shutil.which("ffmpeg") or "/usr/local/bin/ffmpeg"
-# ------------------------------------------------
-
-from moviepy import ColorClip, CompositeVideoClip, TextClip, ImageClip, AudioClip, AudioFileClip, VideoFileClip, vfx
+from collections import Counter
+from collections.abc import Callable
 import math
+import multiprocessing
+import os
+from pathlib import Path
+
 import numpy as np
 
-from hw_encoder import get_encoder_config
-from leaderboard_render import render_video, Participant
+from hw_encoder import ffmpeg_binary, get_encoder_config
+from leaderboard_render import Participant, render_video
+from telegram_export import is_photo, is_video, media_messages
 
-# Константы (оставил только нужные для ассетов)
+os.environ.setdefault("FFMPEG_BINARY", ffmpeg_binary())
+from moviepy import AudioClip, AudioFileClip, ColorClip, CompositeVideoClip, TextClip, VideoFileClip, vfx  # noqa: E402
+
+
 BASE_DIR = Path(__file__).parent
 W, H = 1920, 1080
 TITLE_FONT_PATH = str(BASE_DIR / "static/Roboto-Bold.ttf")
 NUMBER_FONT_PATH = str(BASE_DIR / "static/BulbasaurSP.otf")
-INTRO_MUSIC = str(BASE_DIR / "static/intro.mp3")
 OUTRO_MUSIC = str(BASE_DIR / "static/outro.mp3")
 INTRO_BG_PATH = BASE_DIR / "export/intro_bg.mp4"
 INTRO_LOGO_PATH = BASE_DIR / "static/intro_text.mov"
 MEME_PAUSE_DURATION = 10.0
-TRANSITION_DURATION = 0.6
 BPM = 150
 BEAT = 60 / BPM
 INPUT_FILE = BASE_DIR / "export/result.json"
 MEME_PAUSE_MUSIC = str(BASE_DIR / "static/meme_pause.mp3")
 BACKGROUND_MUSIC_GAIN = 0.2
-EPISODE: int = 1  # overridden by --episode arg in main()
 
 HEROES_END_HOLD = 5.0
 LEADERBOARD_TITLE = "ТОП АНТИДОБРОКЕКЕРОВ ВЫПУСКА"
 LEADERBOARD_FOOTER = "ВСЕМ СПАСИБО ЗА ВИДЕО!"
 HEROES_FOOTER = "СПАСИБО ЗА МЕМЫ!"
 
-# Создаем папку для ассетов, если её нет
 ASSETS_DIR = BASE_DIR / "assets"
-ASSETS_DIR.mkdir(exist_ok=True)
 
-# --- Функции из твоеного оригинального скрипта (shake, ease_out, make_beat_flashes, make_title_clip, make_ad_transition) ---
-# (Вставь сюда их без изменений, чтобы не загромождать ответ)
-def ease_out(p: float) -> float: return 1 - (1 - p) ** 3
-def shake(t: float, ax: float = 6, ay: float = 4) -> tuple[float, float]: return math.sin(t * 47.3) * ax, math.cos(t * 31.7) * ay
-# ── Title clip ────────────────────────────────────────────────────────────────
+def shake(t: float, ax: float = 6, ay: float = 4) -> tuple[float, float]:
+    return math.sin(t * 47.3) * ax, math.cos(t * 31.7) * ay
+
+
 def make_beat_flashes(duration: float, beat: float, w: int = W, h: int = H) -> list:
     flashes = []
     i, t = 0, 0.0
@@ -140,133 +129,14 @@ def make_meme_pause_clip() -> CompositeVideoClip:
     return clip
 
 
-# ── АД transition ─────────────────────────────────────────────────────────────
-def make_ad_transition(duration: float = TRANSITION_DURATION, w: int = W, h: int = H) -> CompositeVideoClip:
-    FS = 260
-    BOX_W, BOX_H = 300, 320
+def get_participants(messages: list[dict], matches_media: Callable[[dict], bool]) -> list[Participant]:
+    counts = Counter(
+        entity["text"]
+        for message in messages if matches_media(message)
+        for entity in message.get("text_entities", []) if entity.get("type") == "code"
+    )
+    return [Participant(name=name, count=count) for name, count in counts.most_common(5)]
 
-    A_START = 0.05
-    A_DUR = duration - A_START - 0.10
-    D_START = 0.25
-    D_DUR = duration - D_START - 0.10
-    D_SLIDE = 0.20
-
-    AX = w // 2 - 130 - BOX_W // 2
-    AY = h // 2 - 70 - BOX_H // 2
-    DX_F = w // 2 + 130 - BOX_W // 2
-    DY_F = h // 2 + 70 - BOX_H // 2
-    DX_S = DX_F + 110
-    DY_S = DY_F + 140
-
-    def pos_a(t):
-        sx, sy = shake(t)
-        return (int(AX + sx), int(AY + sy))
-
-    def pos_a_red(t):
-        sx, sy = shake(t)
-        return (int(AX - 10 + sx), int(AY - 2 + sy))
-
-    def pos_a_blue(t):
-        sx, sy = shake(t)
-        return (int(AX + 10 + sx), int(AY + 2 + sy))
-
-    def pos_d(t):
-        p = ease_out(min(1.0, t / D_SLIDE))
-        x = DX_S + (DX_F - DX_S) * p
-        y = DY_S + (DY_F - DY_S) * p
-        sx, sy = shake(t) if t > D_SLIDE else (0, 0)
-        return (int(x + sx), int(y + sy))
-
-    def pos_d_red(t):
-        px, py = pos_d(t)
-        return (px - 10, py - 2)
-
-    def pos_d_blue(t):
-        px, py = pos_d(t)
-        return (px + 10, py + 2)
-
-    bg = ColorClip((w, h), color=(0, 0, 0), duration=duration)
-
-    def letter(char, color, start, dur, pos_fn, fade_in=None):
-        clip = (
-            TextClip(font=TITLE_FONT_PATH, text=char, color=color, font_size=FS,
-                     size=(BOX_W, BOX_H), text_align="center", method="caption")
-            .with_start(start).with_duration(dur).with_position(pos_fn)
-        )
-        if fade_in:
-            clip = clip.with_effects([vfx.FadeIn(fade_in)])
-        return clip
-
-    a_white = letter("A", "white",   A_START, A_DUR, pos_a,     fade_in=0.10)
-    a_red = letter("A", "#C81E1E", A_START, A_DUR, pos_a_red)
-    a_blue = letter("A", "#1E50DC", A_START, A_DUR, pos_a_blue)
-    d_white = letter("Д", "white",   D_START, D_DUR, pos_d,     fade_in=0.07)
-    d_red = letter("Д", "#C81E1E", D_START, D_DUR, pos_d_red)
-    d_blue = letter("Д", "#1E50DC", D_START, D_DUR, pos_d_blue)
-
-    return CompositeVideoClip(
-        [bg, a_red, a_blue, a_white, d_red, d_blue, d_white]
-    ).with_effects([vfx.FadeIn(0.10), vfx.FadeOut(0.15)])
-
-def get_statistics() -> dict:
-    """Парсит JSON и собирает статистику для аутро."""
-    if not INPUT_FILE.exists():
-        print(f"ВНИМАНИЕ: {INPUT_FILE} не найден. Статистика будет пустой.")
-        return {}
-        
-    with open(INPUT_FILE, "r", encoding="utf-8") as f:
-        export_dict = json.load(f)
-        
-    stats = defaultdict(int)
-    for message in export_dict.get("messages", []):
-        if message.get("media_type") != "video_file":
-            continue
-            
-        skip = False
-        for entity in message.get("text_entities", []):
-            if entity["type"] == "hashtag" and entity["text"] == "#dobrokek":
-                skip = True
-                break
-        if skip:
-            continue
-            
-        for entity in message.get("text_entities", []):
-            if entity["type"] == "code":
-                stats[entity["text"]] += 1
-
-    return dict(stats)
-
-def get_photo_statistics() -> dict:
-    """Парсит JSON и собирает статистику присланных фото для «Героев мемной паузы»."""
-    if not INPUT_FILE.exists():
-        print(f"ВНИМАНИЕ: {INPUT_FILE} не найден. Статистика фото будет пустой.")
-        return {}
-
-    with open(INPUT_FILE, "r", encoding="utf-8") as f:
-        export_dict = json.load(f)
-
-    stats = defaultdict(int)
-    for message in export_dict.get("messages", []):
-        if "photo" not in message:
-            continue
-
-        skip = False
-        for entity in message.get("text_entities", []):
-            if entity["type"] == "hashtag" and entity["text"] == "#dobrokek":
-                skip = True
-                break
-        if skip:
-            continue
-
-        for entity in message.get("text_entities", []):
-            if entity["type"] == "code":
-                stats[entity["text"]] += 1
-
-    return dict(stats)
-
-def _stats_to_participants(stats: dict) -> list:
-    sorted_items = sorted(stats.items(), key=lambda x: x[1], reverse=True)[:5]
-    return [Participant(name=name, count=count) for name, count in sorted_items]
 
 def main():
     parser = argparse.ArgumentParser()
@@ -290,8 +160,14 @@ def main():
     print(f"Выпуск #{args.episode}")
     print("Генерируем: " + ", ".join(k for k, v in selected.items() if v))
 
-    ffmpeg_bin = os.environ.get("FFMPEG_BINARY", "ffmpeg")
-    enc = get_encoder_config(ffmpeg_bin)
+    ASSETS_DIR.mkdir(exist_ok=True)
+    enc = get_encoder_config(ffmpeg_binary())
+    messages = []
+    if selected["outro"] or selected["meme_heroes"]:
+        try:
+            messages = media_messages(INPUT_FILE)
+        except FileNotFoundError:
+            print(f"ВНИМАНИЕ: {INPUT_FILE} не найден. Статистика будет пустой.")
 
     def _silent_audio(duration: float, fps: int = 48000):
         """Тихая стерео-дорожка нужной длины (для ассетов без звука)."""
@@ -323,11 +199,9 @@ def main():
         render(make_title_clip(args.episode), "intro.mp4")
 
     if selected["outro"]:
-        print("Собираем статистику для Аутро...")
-        stats = get_statistics()
         print("Рендерим Аутро (leaderboard)...")
         render_video(
-            participants=_stats_to_participants(stats),
+            participants=get_participants(messages, is_video),
             mode="leaderboard",
             title=LEADERBOARD_TITLE,
             footer=LEADERBOARD_FOOTER,
@@ -343,10 +217,9 @@ def main():
 
     if selected["meme_heroes"]:
         print("Собираем статистику по фото для Героев мемной паузы...")
-        photo_stats = get_photo_statistics()
         print("Рендерим Героев мемной паузы...")
         render_video(
-            participants=_stats_to_participants(photo_stats),
+            participants=get_participants(messages, is_photo),
             mode="heroes",
             show_title=False,
             footer=HEROES_FOOTER,
@@ -358,6 +231,7 @@ def main():
         )
 
     print("Готово! Ассеты (" + ", ".join(k for k, v in selected.items() if v) + ") сохранены в папку assets/")
+
 
 if __name__ == "__main__":
     main()

@@ -3,7 +3,6 @@
 
 import argparse
 from collections import Counter
-import os
 from pathlib import Path
 
 from meme_narration import BASE_DIR, SCRIPTS_PATH, NarrationLibrary, collect_images
@@ -14,15 +13,13 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--input-dir", type=Path, default=BASE_DIR / "export")
     parser.add_argument("--scripts", type=Path, default=SCRIPTS_PATH)
-    parser.add_argument("--recognizer", choices=["lmstudio", "tesseract"],
-                        default=os.environ.get("MEME_RECOGNIZER", "lmstudio"))
-    parser.add_argument("--refresh", "--refresh-ocr", action="store_true",
+    parser.add_argument("--refresh", action="store_true",
                         help="Повторить распознавание; записи source=manual сохраняются")
     args = parser.parse_args()
     log = ProcessingLog(args.scripts.parent / "logs", "narrations")
     log("RUN", "start", f"Подробный журнал: {log.path}", log_file=str(log.path))
     try:
-        library = NarrationLibrary(args.scripts, args.input_dir, recognizer=args.recognizer, log=log)
+        library = NarrationLibrary(args.scripts, args.input_dir, log=log)
         paths = collect_images(args.input_dir)
         library.prepare(paths, refresh=args.refresh)
         report = library.write_report()

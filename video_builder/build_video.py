@@ -2,37 +2,26 @@
 import argparse
 import json
 import os
-import subprocess
-import sys
-import tempfile
 from pathlib import Path
-
-# --- НАСТРОЙКИ ОКРУЖЕНИЯ ---
 import shutil
-wsl_native_path = "/usr/lib/wsl/lib"
-if os.path.exists(wsl_native_path):
-    os.environ["LD_LIBRARY_PATH"] = f"{wsl_native_path}:" + \
-        os.environ.get("LD_LIBRARY_PATH", "")
+import subprocess
+import tempfile
 
-os.environ["FFMPEG_BINARY"] = shutil.which("ffmpeg") or "/usr/local/bin/ffmpeg"
-# ---------------------------
-
-from hw_encoder import get_encoder_config  # noqa: E402
-from audio_normalization import normalization_filter  # noqa: E402
+from audio_normalization import normalization_filter
+from hw_encoder import ffmpeg_binary, get_encoder_config
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 BASE_DIR = Path(__file__).parent
 
 OUTPUT_FILE = BASE_DIR / "result/output.mp4"
 ASSETS_DIR = BASE_DIR / "assets"
-TEMP_DIR = BASE_DIR / "temp_clips"
-MANIFEST_PATH = TEMP_DIR / "manifest.json"
-CONCAT_LIST_PATH = TEMP_DIR / "concat_list.txt"
+MANIFEST_PATH = BASE_DIR / "temp_clips/manifest.json"
 
 # Канонические параметры сегмента (как у клипов из build_clips.py).
 # Сегменты, которые им соответствуют, склеиваются без перекодирования (lossless).
 # Несоответствующие (например, кастомные ассеты) нормализуются перекодированием.
 W, H, FPS = 1920, 1080, 30
+AUDIO_FLAGS = ["-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-ac", "2"]
 
 
 def _ffprobe(ffprobe_bin: str, path: str, stream: str, entries: str) -> list[str]:
@@ -85,10 +74,10 @@ def prepare_ts(ffmpeg_bin: str, ffprobe_bin: str, src: str, ts_path: Path, enc: 
                 cmd += ["-af", audio_filter]
             else:
                 print(f"   [normalize] {Path(src).name}: аудио не канон ({'/'.join(a)}) -> перекодируем")
-            cmd += ["-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-ac", "2"]
+            cmd += AUDIO_FLAGS
     else:
         print(f"   [normalize] {Path(src).name}: нет аудио -> добавляем тишину")
-        cmd += ["-map", "1:a:0", "-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-ac", "2", "-shortest"]
+        cmd += ["-map", "1:a:0", *AUDIO_FLAGS, "-shortest"]
 
     cmd += ["-f", "mpegts", str(ts_path)]
     subprocess.run(cmd, check=True)
@@ -102,12 +91,15 @@ def main() -> None:
     parser.add_argument("--no-normalize-audio", action="store_true",
                         help="Отключить выравнивание громкости (прежнее поведение).")
     args = parser.parse_args()
-    OUTPUT_FILE.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(prefix=".episode-", dir=OUTPUT_FILE.parent) as stage:
-        partial = Path(stage) / OUTPUT_FILE.name
-        assemble_video(MANIFEST_PATH, partial, TEMP_DIR, CONCAT_LIST_PATH,
-                       assets_dir=ASSETS_DIR, normalize_audio=not args.no_normalize_audio)
-        partial.replace(OUTPUT_FILE)
+    try:
+        OUTPUT_FILE.parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(prefix=".episode-", dir=OUTPUT_FILE.parent) as stage:
+            partial = Path(stage) / OUTPUT_FILE.name
+            assemble_video(MANIFEST_PATH, partial, assets_dir=ASSETS_DIR,
+                           normalize_audio=not args.no_normalize_audio)
+            partial.replace(OUTPUT_FILE)
+    except (OSError, ValueError, RuntimeError) as error:
+        parser.exit(1, f"Ошибка сборки: {error}\n")
     print(f"Готовый выпуск: {OUTPUT_FILE}")
 
 
@@ -118,22 +110,14 @@ def available_asset(assets_dir: Path | None, name: str) -> Path | None:
     return path if path.is_file() and path.stat().st_size > 1 else None
 
 
-def assemble_video(manifest_path, output_file, temp_dir, concat_list_path, *, assets_dir=None, normalize_audio=True):
-    if not manifest_path.exists():
-        sys.exit("Ошибка: temp_clips/manifest.json не найден. Сначала запустите build_clips.py!")
-
-    with open(manifest_path, encoding="utf-8") as f:
-        manifest = json.load(f)
-
-    output_file.parent.mkdir(exist_ok=True)
-
+def ordered_clips(clips: list[dict], assets_dir: Path | None) -> list[str]:
     # Разделяем клипы по ролям (порядок внутри ролей сохраняем как в манифесте)
     before_memes: list[str] = []
     meme_clips_list: list[str] = []
     after_memes: list[str] = []
     in_memes = False
 
-    for entry in manifest["clips"]:
+    for entry in clips:
         path = entry["path"]
         if not os.path.exists(path):
             print(f"[skip] {path}: файл не найден")
@@ -184,62 +168,54 @@ def assemble_video(manifest_path, output_file, temp_dir, concat_list_path, *, as
     elif assets_dir:
         print("ВНИМАНИЕ: assets/outro.mp4 не найдено. Сначала запустите build_assets.py!")
 
-    if not ordered:
-        sys.exit("Ошибка: нет ни одного клипа для склейки.")
+    return ordered
 
-    ffmpeg_bin = os.environ.get("FFMPEG_BINARY", "ffmpeg")
+
+def assemble_video(manifest_path: Path, output_file: Path, *, assets_dir: Path | None = None,
+                   normalize_audio: bool = True) -> None:
+    try:
+        with manifest_path.open(encoding="utf-8") as f:
+            clips = json.load(f)["clips"]
+    except FileNotFoundError as error:
+        raise ValueError(f"{manifest_path} не найден. Сначала запустите make clips.") from error
+    ordered = ordered_clips(clips, assets_dir)
+    if not ordered:
+        raise ValueError("Нет ни одного клипа для склейки.")
+
+    ffmpeg_bin = ffmpeg_binary()
     ffprobe_bin = shutil.which("ffprobe") or "ffprobe"
     enc = get_encoder_config(ffmpeg_bin)
 
-    # Лоссless-склейка MP4 через промежуточный MPEG-TS.
-    # Прямой `concat -c copy` по MP4 даёт non-monotonic DTS (из-за edit lists и
-    # B-кадров с отрицательным стартовым DTS) → рассинхрон. TS не имеет edit lists
-    # и склеивается с чистым таймлайном. Соответствующие канону сегменты при этом
-    # копируются без перекодирования; кастомные ассеты нормализуются (см. prepare_ts).
+    # MPEG-TS avoids timestamp gaps caused by MP4 edit lists during concatenation.
     print(f"-> Склеиваем финальное видео ({len(ordered)} сегментов)...")
+    output_file.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix=".concat-", dir=manifest_path.parent) as folder:
+        stage = Path(folder)
+        segments = []
+        for index, src in enumerate(ordered):
+            segment = stage / f"seg_{index:04d}.ts"
+            try:
+                prepare_ts(ffmpeg_bin, ffprobe_bin, str(Path(src).resolve()), segment, enc,
+                           normalize_audio=normalize_audio)
+            except (subprocess.CalledProcessError, RuntimeError) as error:
+                raise RuntimeError(f"Ошибка FFmpeg при подготовке сегмента {src}: {error}") from error
+            segments.append(f"file '{segment.name}'\n")
 
-    TS_DIR = temp_dir / "ts"
-    if TS_DIR.exists():
-        shutil.rmtree(TS_DIR)
-    TS_DIR.mkdir(parents=True, exist_ok=True)
-
-    ts_paths: list[str] = []
-    for i, p in enumerate(ordered):
-        ts_path = TS_DIR / f"seg_{i:04d}.ts"
+        concat_list = stage / "concat.txt"
+        concat_list.write_text("".join(segments), encoding="utf-8")
+        # Re-encode AAC to keep audio timestamps continuous across segment boundaries.
+        cmd = [
+            ffmpeg_bin, "-y", "-loglevel", "error",
+            "-f", "concat", "-i", str(concat_list),
+            "-c:v", "copy",
+            *AUDIO_FLAGS,
+            "-movflags", "+faststart",
+            str(output_file),
+        ]
         try:
-            prepare_ts(ffmpeg_bin, ffprobe_bin, str(Path(p).resolve()), ts_path, enc,
-                       normalize_audio=normalize_audio)
-        except (subprocess.CalledProcessError, RuntimeError) as e:
-            sys.exit(f"Ошибка FFMPEG при подготовке сегмента {p} к склейке: {e}")
-        ts_paths.append(str(ts_path))
-
-    # Пишем список для concat-demuxer (экранируем одинарные кавычки в путях)
-    lines = []
-    for p in ts_paths:
-        abs_p = str(Path(p).resolve()).replace("'", "'\\''")
-        lines.append(f"file '{abs_p}'")
-    concat_list_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-
-    # Видео копируем без перекодирования (lossless — ради чего всё и затевалось).
-    # Аудио перекодируем после коррекции сегментов: это выравнивает таймлайн на стыках
-    # (иначе по границам AAC-кадров остаются non-monotonic DTS).
-    cmd = [
-        ffmpeg_bin, "-y",
-        "-f", "concat", "-safe", "0",
-        "-i", str(concat_list_path),
-        "-c:v", "copy",
-        "-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-ac", "2",
-        "-movflags", "+faststart",
-        str(output_file),
-    ]
-
-    try:
-        subprocess.run(cmd, check=True)
-    except subprocess.CalledProcessError as e:
-        sys.exit(f"Ошибка FFMPEG при финальной склейке: {e}")
-
-    shutil.rmtree(TS_DIR, ignore_errors=True)
-    print(f"Готово! Финальное видео: {output_file}")
+            subprocess.run(cmd, check=True)
+        except subprocess.CalledProcessError as error:
+            raise RuntimeError(f"Ошибка FFmpeg при финальной склейке: {error}") from error
 
 
 if __name__ == "__main__":
